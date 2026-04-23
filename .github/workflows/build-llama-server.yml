@@ -20,39 +20,34 @@ jobs:
 
     steps:
       - name: Install CUDA Toolkit 12.4
+        shell: cmd
+        run: |
+          set "CUDA_ROOT=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
+          mkdir "%CUDA_ROOT%" 2>nul
+
+          curl -L -o cudart.zip https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.4.127-archive.zip
+          curl -L -o nvcc.zip https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-12.4.131-archive.zip
+          curl -L -o nvrtc.zip https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-12.4.127-archive.zip
+          curl -L -o cublas.zip https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.4.5.8-archive.zip
+          curl -L -o cccl.zip https://developer.download.nvidia.com/compute/cuda/redist/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-12.4.127-archive.zip
+
+          powershell -Command "Expand-Archive -Path cudart.zip -DestinationPath cuda_tmp -Force"
+          powershell -Command "Expand-Archive -Path nvcc.zip -DestinationPath cuda_tmp -Force"
+          powershell -Command "Expand-Archive -Path nvrtc.zip -DestinationPath cuda_tmp -Force"
+          powershell -Command "Expand-Archive -Path cublas.zip -DestinationPath cuda_tmp -Force"
+          powershell -Command "Expand-Archive -Path cccl.zip -DestinationPath cuda_tmp -Force"
+
+          for /d %%d in (cuda_tmp\*) do xcopy "%%d\*" "%CUDA_ROOT%" /E /I /H /Y /Q
+
+          "%CUDA_ROOT%\bin\nvcc.exe" --version
+          dir "%CUDA_ROOT%\include\cuda_runtime.h"
+
+      - name: Set CUDA environment
         shell: pwsh
         run: |
           $cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
-          New-Item -ItemType Directory -Force -Path $cudaRoot | Out-Null
-
-          # Download CUDA components
-          $components = @{
-            "cuda_cudart" = "cuda_cudart-windows-x86_64-12.4.127-archive.zip"
-            "cuda_nvcc" = "cuda_nvcc-windows-x86_64-12.4.131-archive.zip"
-            "cuda_nvrtc" = "cuda_nvrtc-windows-x86_64-12.4.127-archive.zip"
-            "libcublas" = "libcublas-windows-x86_64-12.4.5.8-archive.zip"
-            "cuda_cccl" = "cuda_cccl-windows-x86_64-12.4.127-archive.zip"
-          }
-
-          foreach ($category in $components.Keys) {
-            $filename = $components[$category]
-            $url = "https://developer.download.nvidia.com/compute/cuda/redist/$category/windows-x86_64/$filename"
-            Write-Host "Downloading $filename..."
-            curl.exe -L -o $filename $url
-            Write-Host "Extracting $filename..."
-            Expand-Archive -Path $filename -DestinationPath $cudaRoot -Force
-            $extracted = $filename -replace '\.zip$', ''
-            Get-ChildItem "$cudaRoot\$extracted" -Recurse | Move-Item -Destination $cudaRoot -Force -ErrorAction SilentlyContinue
-            Remove-Item "$cudaRoot\$extracted" -Recurse -Force -ErrorAction SilentlyContinue
-            Remove-Item $filename -Force
-          }
-
-          # Set environment
           echo "$cudaRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           echo "CUDA_PATH=$cudaRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          # Verify nvcc
-          & "$cudaRoot\bin\nvcc.exe" --version
 
       - name: Install Ninja
         shell: pwsh
