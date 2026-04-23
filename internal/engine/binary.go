@@ -62,40 +62,68 @@ func downloadURL(hw *hardware.HardwareProbe) string {
 	return fmt.Sprintf("%s/llama-%s-bin-ubuntu-x64.tar.gz", base, releaseTag)
 }
 
-// EnsureBinary ensures the correct llama-server binary is available
+// EnsureBinary ensures the correct llama-server binary is available.
+// Priority: bundled iso3 binary > cached binary > download official release.
 func EnsureBinary(hw *hardware.HardwareProbe) (string, error) {
 	binaryName := selectBinary(hw)
-	binaryPath := filepath.Join(config.BinDir(), binaryName)
 
+	// 1. Check for bundled iso3 binary (shipped with kaiwu release)
+	bundledPath := findBundledBinary(binaryName)
+	if bundledPath != "" {
+		fmt.Printf("      Using bundled iso3 binary: %s\n", filepath.Base(bundledPath))
+		return bundledPath, nil
+	}
+
+	// 2. Check cached binary in ~/.kaiwu/bin/
+	binaryPath := filepath.Join(config.BinDir(), binaryName)
 	if _, err := os.Stat(binaryPath); err == nil {
 		return binaryPath, nil
 	}
 
+	// 3. Download official release as fallback
 	url := downloadURL(hw)
 	fmt.Printf("      Downloading: %s\n", filepath.Base(url))
 
-	// Download archive
 	archivePath := filepath.Join(config.BinDir(), filepath.Base(url))
 	if err := download.DownloadFile(url, archivePath, true); err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
 	}
 
-	// Extract llama-server from archive
 	fmt.Printf("      Extracting llama-server...\n")
 	if err := extractLlamaServer(archivePath, binaryPath); err != nil {
 		os.Remove(archivePath)
 		return "", fmt.Errorf("extraction failed: %w", err)
 	}
 
-	// Cleanup archive
 	os.Remove(archivePath)
 
-	// Set executable permission on Linux
 	if runtime.GOOS == "linux" {
 		os.Chmod(binaryPath, 0755)
 	}
 
 	return binaryPath, nil
+}
+
+// findBundledBinary looks for an iso3-capable llama-server shipped alongside kaiwu.
+// Searches: same directory as kaiwu executable, then ./bin/ relative to it.
+func findBundledBinary(binaryName string) string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	exeDir := filepath.Dir(exe)
+
+	candidates := []string{
+		filepath.Join(exeDir, binaryName),
+		filepath.Join(exeDir, "bin", binaryName),
+	}
+
+	for _, path := range candidates {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > 1024*1024 {
+			return path
+		}
+	}
+	return ""
 }
 
 // extractLlamaServer extracts llama-server binary from zip or tar.gz
