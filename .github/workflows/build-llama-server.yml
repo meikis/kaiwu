@@ -2,52 +2,28 @@ name: Build llama-server (TurboQuant iso3)
 
 on:
   workflow_dispatch:
-    inputs:
-      cuda_version:
-        description: 'CUDA version'
-        required: true
-        default: '12.4'
-        type: choice
-        options:
-          - '12.4'
 
 jobs:
   # ============================================================
   # Windows CUDA build
+  # 用 Jimver/cuda-toolkit Action，llama.cpp 官方 CI 验证过的方法
   # ============================================================
   windows-cuda:
     runs-on: windows-2022
 
     steps:
       - name: Install CUDA Toolkit 12.4
-        shell: cmd
-        run: |
-          set "CUDA_ROOT=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
-          mkdir "%CUDA_ROOT%" 2>nul
+        uses: Jimver/cuda-toolkit@v0.2.16
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
 
-          curl -L -o cudart.zip https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.4.127-archive.zip
-          curl -L -o nvcc.zip https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-12.4.131-archive.zip
-          curl -L -o nvrtc.zip https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-12.4.127-archive.zip
-          curl -L -o cublas.zip https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.4.5.8-archive.zip
-          curl -L -o cccl.zip https://developer.download.nvidia.com/compute/cuda/redist/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-12.4.127-archive.zip
-
-          powershell -Command "Expand-Archive -Path cudart.zip -DestinationPath cuda_tmp -Force"
-          powershell -Command "Expand-Archive -Path nvcc.zip -DestinationPath cuda_tmp -Force"
-          powershell -Command "Expand-Archive -Path nvrtc.zip -DestinationPath cuda_tmp -Force"
-          powershell -Command "Expand-Archive -Path cublas.zip -DestinationPath cuda_tmp -Force"
-          powershell -Command "Expand-Archive -Path cccl.zip -DestinationPath cuda_tmp -Force"
-
-          for /d %%d in (cuda_tmp\*) do xcopy "%%d\*" "%CUDA_ROOT%" /E /I /H /Y /Q
-
-          "%CUDA_ROOT%\bin\nvcc.exe" --version
-          dir "%CUDA_ROOT%\include\cuda_runtime.h"
-
-      - name: Set CUDA environment
+      - name: Verify CUDA
         shell: pwsh
         run: |
-          $cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
-          echo "$cudaRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "CUDA_PATH=$cudaRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          nvcc --version
+          echo "CUDA_PATH=$env:CUDA_PATH"
 
       - name: Install Ninja
         shell: pwsh
@@ -56,7 +32,7 @@ jobs:
       - name: Download TurboQuant source
         shell: pwsh
         run: |
-          curl -L -o turboquant.zip "https://codeload.github.com/johndpope/llama-cpp-turboquant/zip/refs/heads/feature/planarquant-kv-cache"
+          curl.exe -L -o turboquant.zip "https://codeload.github.com/johndpope/llama-cpp-turboquant/zip/refs/heads/feature/planarquant-kv-cache"
           Expand-Archive turboquant.zip -DestinationPath .
           Rename-Item llama-cpp-turboquant-feature-planarquant-kv-cache llama-cpp-turboquant
 
@@ -83,11 +59,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifact
-          # llama-server binary
           Copy-Item llama-cpp-turboquant\build\bin\Release\llama-server.exe artifact\llama-server-cuda.exe
-          # Required DLLs from build
           Get-ChildItem llama-cpp-turboquant\build\bin\Release\*.dll | Copy-Item -Destination artifact\
-          # CUDA runtime DLLs
           $cudaBin = "$env:CUDA_PATH\bin"
           @("cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll") | ForEach-Object {
             $src = Join-Path $cudaBin $_
