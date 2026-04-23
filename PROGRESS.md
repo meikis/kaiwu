@@ -98,6 +98,7 @@
 
 **Spec：** `D:\program\ollama\kaiwu-v4\KAIWU_TWO_VERSION_SPEC.md`
 **Fork：** `johndpope/llama-cpp-turboquant@feature/planarquant-kv-cache`
+**GitHub：** `https://github.com/val1813/kaiwu`
 
 ### 代码改动（✅ 已完成）
 
@@ -105,9 +106,43 @@
 |------|------|
 | `model/matcher.go` | DeployProfile 加 `HasIsoQuant` 字段，默认 true |
 | `engine/runner.go` | buildArgs 改用 `-ctk iso3 -ctv iso3`，不支持时回退 q8_0/q4_0 |
+| `engine/binary.go` | 新增 bundled binary 优先级：本地打包 iso3 > 缓存 > 下载官方 |
 | `engine/oom.go` | OOM 预检用 iso3 压缩系数 0.75 + 600MB 固定开销 |
 | `optimizer/params.go` | DynamicCtxSize 同步 iso3，上限扩到 512K |
 | `optimizer/warmup.go` | BuildArgs 同步 iso3 参数 |
+| `model/autodetect.go` | MoE 模型 VRAM/RAM 估算修复（shared layers 占比计算） |
+| `go.mod` + 全部 import | module path 改为 `github.com/val1813/kaiwu` |
+
+### GitHub Actions CI（✅ 已完成）
+
+**Workflow：** `.github/workflows/build-llama-server.yml`
+
+自动编译 turboquant fork 的 llama-server，支持 iso3 KV cache。
+
+| 平台 | 状态 | Runner | CUDA |
+|------|------|--------|------|
+| Linux | ✅ 编译成功 | ubuntu-22.04 | apt cuda-toolkit-12-4 |
+| Windows | ✅ 编译成功 | windows-2022 | Jimver/cuda-toolkit@v0.2.16 |
+
+**CUDA 架构：** sm_75/80/86/89（Turing/Ampere/Ada Lovelace）
+- RTX 50 系列（sm_120）通过 PTX JIT 编译支持，运行时自动处理
+
+**MSVC 编译修复（3 处）：**
+1. `ops.cpp`: `extern "C" GGML_API int turbo3_cpu_wht_group_size;` → `int turbo3_cpu_wht_group_size = 1;`（声明改定义）
+2. `ggml-turbo-quant.c`: 添加 `#define _USE_MATH_DEFINES`（MSVC 不自带 M_PI）
+3. `llama-kv-cache.cpp`: 添加 `float * g_innerq_scale_inv_host = nullptr;`（链接符号）
+
+**产物：**
+- `llama-server-turboquant-win-cuda-12.4`（Windows: llama-server-cuda.exe + DLLs）
+- `llama-server-turboquant-linux-cuda-12.4`（Linux: llama-server-cuda + .so）
+- 保留 90 天，手动触发 workflow_dispatch
+
+**踩坑记录：**
+- ❌ 手动 curl 下载 CUDA redist zip → 路径/解压/合并全部出问题，连续失败 4 次
+- ❌ PowerShell Move-Item 合并嵌套目录 → cuda_runtime.h 丢失
+- ❌ CUDA 12.4 不支持 compute_120 → 去掉 sm_120，用 PTX JIT 代替
+- ❌ `extern "C"` 只改声明不改定义 → MSVC LNK2019 链接错误
+- ✅ 最终方案：Jimver/cuda-toolkit Action + 3 处 MSVC fix，一次通过
 
 ### VPS 实测（✅ 双 4090 24GB×2, 128GB RAM）
 
@@ -134,17 +169,17 @@ iso3+iso3               512K    50.7 tok/s   12.4 GB
 ```
 配置                     ctx     速度        GPU      RAM
 ──────────────────────────────────────────────────────────
-q8_0+q4_0               32K    10.6 tok/s   7.7/8.1  15.3/15.7
+q8_0+q4_0 (官方b8851)   4K     11.1 tok/s   5.0/8.1  —
+iso3+iso3 (turboquant)   待测    待测         待测     待测
 ```
 
 ### 待解决问题
 
-1. **Windows 编译 turboquant fork** — 🔄 进行中
-   - GitHub Actions workflow 已就绪（`.github/workflows/build-llama-server.yml`）
-   - 自动编译 Windows CUDA 12.4 + Linux CUDA 12.4 版本
-   - 自动修复 `extern "C" GGML_API` 编译 bug
-   - 产物保留 90 天，下载后打包进 kaiwu 发布包
-   - **下一步：** 在 GitHub 网页手动触发 workflow（Actions → Build llama-server → Run workflow）
+1. **Windows 编译 turboquant fork** — ✅ 已完成
+   - GitHub Actions CI 编译成功（Windows + Linux）
+   - 使用 `Jimver/cuda-toolkit@v0.2.16` 安装 CUDA（不要手动下载）
+   - 3 处 MSVC 编译 fix 已集成到 workflow
+   - **下一步：** 下载 artifact，部署到本地，测试 iso3 速度
 
 2. **8GB 笔记本跑 30B 内存不足** — ✅ 已修复
    - autodetect.go 新增 `estimateMinVRAM()` 和 `estimateMinRAM()`
@@ -173,14 +208,14 @@ q8_0+q4_0               32K    10.6 tok/s   7.7/8.1  15.3/15.7
 
 ## 部署信息
 
+**GitHub：** `https://github.com/val1813/kaiwu`
+
 **二进制位置：** `C:\Users\15488\bin\kaiwu.exe`
 **源码位置：** `D:\program\ollama\kaiwu-release\`
 **模型目录：** `C:\Users\15488\.kaiwu\models\`
 **配置目录：** `C:\Users\15488\.kaiwu\`
 
-**当前运行：**
-- 版本：Kaiwu 1.2.0
-- 模型：Qwen3-8B Q5_K_M (5.6GB)
-- 上下文：32768 tokens
-- KV cache：K q8_0 (1224 MB) + V q4_0 (648 MB)
-- 速度：39.3 tok/s
+**当前版本：** Kaiwu dev (2026-04-23 编译)
+- Go module: `github.com/val1813/kaiwu`
+- llama-server: 官方 b8851 → 待替换为 turboquant iso3 版本
+- 已部署模型：Qwen3-8B Q5_K_M, Qwen3-30B-A3B Q3_K_XL
