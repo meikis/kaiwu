@@ -139,21 +139,22 @@ q8_0+q4_0               32K    10.6 tok/s   7.7/8.1  15.3/15.7
 
 ### 待解决问题
 
-1. **Windows 编译 turboquant fork**
-   - 本地 llama-server 是官方主线编译，不支持 iso3
-   - 需要用 turboquant fork 交叉编译 Windows CUDA 版本
-   - fork 有 `extern "C" GGML_API` 编译 bug（已在 VPS 上修复）
-   - 方案：CI 里加 Windows CUDA 编译步骤，或提供预编译 binary
+1. **Windows 编译 turboquant fork** — 🔄 进行中
+   - GitHub Actions workflow 已就绪（`.github/workflows/build-llama-server.yml`）
+   - 自动编译 Windows CUDA 12.4 + Linux CUDA 12.4 版本
+   - 自动修复 `extern "C" GGML_API` 编译 bug
+   - 产物保留 90 天，下载后打包进 kaiwu 发布包
+   - **下一步：** 在 GitHub 网页手动触发 workflow（Actions → Build llama-server → Run workflow）
 
-2. **8GB 笔记本跑 30B 内存不足**
-   - 13GB 模型 + 1.2GB KV cache + 系统 = 15.3GB，16GB RAM 几乎满载
-   - 速度只有 10.6 tok/s（CPU offload 瓶颈）
-   - 方案：kaiwu 应在 matcher 阶段检测 RAM 余量，8GB GPU + 16GB RAM 时建议用 8B 模型而非 30B
+2. **8GB 笔记本跑 30B 内存不足** — ✅ 已修复
+   - autodetect.go 新增 `estimateMinVRAM()` 和 `estimateMinRAM()`
+   - MoE offload 模式：MinVRAM = shared layers (~10%) + 1.5GB，MinRAM = 80% model + 2GB
+   - Qwen3-30B-A3B 13GB：5GB VRAM + 12GB RAM（原 14.4GB + 15.9GB）
+   - 16GB RAM 机器现在可以正常跑 30B MoE 模型
 
-3. **中文 prompt UTF-8 编码问题**
-   - Windows bash 环境下 curl 发送中文 JSON 会导致 UTF-8 解析错误
-   - 影响：kaiwu 的 warmup benchmark 如果用中文 prompt 可能在某些 Windows 环境下失败
-   - 方案：warmup prompt 改用纯 ASCII 英文
+3. **中文 prompt UTF-8 编码问题** — ✅ 已修复
+   - warmup.go 的 benchmark prompt 已使用纯 ASCII 英文
+   - 避免 Windows bash 环境下 UTF-8 编码错误
 
 ---
 
