@@ -296,6 +296,7 @@ func stopBenchServer(proc *os.Process) {
 
 // measureTPS sends a prompt and measures decode tokens per second
 func measureTPS(port int) (float64, error) {
+	// Use pure ASCII prompt to avoid UTF-8 encoding issues on Windows bash
 	reqBody := `{
 		"model": "test",
 		"messages": [{"role": "user", "content": "Write a Python quicksort implementation with detailed comments and edge case handling."}],

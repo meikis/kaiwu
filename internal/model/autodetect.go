@@ -434,11 +434,41 @@ func metaToModelDef(meta *GGUFMeta, filename string) ModelDef {
 				HFFile:         filename,
 				Size_GB:        sizeGB,
 				QualityLossPct: 0, // unknown
-				MinVRAM_GB:     sizeGB + 1.5,
-				MinRAM_GB:      sizeGB + 3.0,
+				MinVRAM_GB:     estimateMinVRAM(sizeGB, isMoE, meta.ExpertsTotal, meta.ExpertsActive),
+				MinRAM_GB:      estimateMinRAM(sizeGB, isMoE),
 			},
 		},
 	}
 
 	return def
+}
+
+// estimateMinVRAM calculates minimum VRAM needed.
+// MoE models with offload only need shared layers in VRAM (~10-15% of total),
+// dense models need the full model + overhead.
+func estimateMinVRAM(sizeGB float64, isMoE bool, expertsTotal, expertsActive int) float64 {
+	if isMoE && expertsTotal > 0 {
+		// MoE offload: only shared layers + active expert weights in VRAM
+		// Shared layers are roughly (1 - expert_ratio) of total size
+		// For 128-expert models like Qwen3-30B-A3B, shared layers ~= 5-10% of model
+		expertRatio := 1.0 - float64(expertsActive)/float64(expertsTotal)
+		sharedGB := sizeGB * (1.0 - expertRatio*0.9) // ~10% shared + active experts
+		minVRAM := sharedGB + 1.5                     // + KV cache + overhead
+		if minVRAM < 4.0 {
+			minVRAM = 4.0
+		}
+		return math.Round(minVRAM*10) / 10
+	}
+	return sizeGB + 1.5
+}
+
+// estimateMinRAM calculates minimum RAM needed.
+// MoE offload puts experts in RAM, so RAM needs to hold the full model.
+func estimateMinRAM(sizeGB float64, isMoE bool) float64 {
+	if isMoE {
+		// MoE offload: full model in RAM + system overhead
+		// But RAM requirement is lower than sizeGB+3 because GPU handles shared layers
+		return math.Round((sizeGB*0.8+2.0)*10) / 10
+	}
+	return sizeGB + 3.0
 }
