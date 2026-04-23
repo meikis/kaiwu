@@ -36,11 +36,32 @@ jobs:
           Expand-Archive turboquant.zip -DestinationPath .
           Rename-Item llama-cpp-turboquant-feature-planarquant-kv-cache llama-cpp-turboquant
 
-      - name: Fix extern C build bug
+      - name: Fix MSVC build bugs
         shell: pwsh
         run: |
-          $file = "llama-cpp-turboquant\ggml\src\ggml-cpu\ops.cpp"
-          (Get-Content $file) -replace 'extern "C" GGML_API int turbo3_cpu_wht_group_size;', 'extern "C" int turbo3_cpu_wht_group_size;' | Set-Content $file
+          # Fix 1: ops.cpp - replace extern declaration with definition (MSVC linker needs it)
+          $ops = "llama-cpp-turboquant\ggml\src\ggml-cpu\ops.cpp"
+          $content = Get-Content $ops -Raw
+          $content = $content -replace 'extern "C" GGML_API int turbo3_cpu_wht_group_size;', 'int turbo3_cpu_wht_group_size = 1;'
+          $content | Set-Content $ops
+
+          # Fix 2: ggml-turbo-quant.c - add M_PI definition (MSVC doesn't define it by default)
+          $tq = "llama-cpp-turboquant\ggml\src\ggml-cuda\ggml-turbo-quant.c"
+          if (Test-Path $tq) {
+            $content = Get-Content $tq -Raw
+            if ($content -notmatch '_USE_MATH_DEFINES') {
+              "#define _USE_MATH_DEFINES`n#include <math.h>`n" + $content | Set-Content $tq
+            }
+          }
+
+          # Fix 3: g_innerq_scale_inv_host linker issue
+          $kvcache = "llama-cpp-turboquant\src\llama-kv-cache.cpp"
+          if (Test-Path $kvcache) {
+            $content = Get-Content $kvcache -Raw
+            if ($content -notmatch 'g_innerq_scale_inv_host') {
+              "/* MSVC linker fix */`nfloat * g_innerq_scale_inv_host = nullptr;`n" + $content | Set-Content $kvcache
+            }
+          }
 
       - name: Build llama-server
         shell: cmd
