@@ -72,7 +72,7 @@ jobs:
             -DGGML_NATIVE=OFF ^
             -DGGML_CUDA=ON ^
             -DGGML_CUDA_F16=ON ^
-            -DCMAKE_CUDA_ARCHITECTURES="86;89;120"
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"
           cmake --build build --config Release -t llama-server
 
       - name: Collect artifacts
@@ -131,7 +131,7 @@ jobs:
           cmake -B build \
             -DGGML_CUDA=ON \
             -DGGML_CUDA_F16=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="86;89;120" \
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=gcc-12 \
             -DCMAKE_CXX_COMPILER=g++-12
