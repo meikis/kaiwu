@@ -1,0 +1,691 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+
+	"github.com/fatih/color"
+	"github.com/spf13/cobra"
+
+	"github.com/kaiwu-ai/kaiwu/internal/config"
+	"github.com/kaiwu-ai/kaiwu/internal/engine"
+	"github.com/kaiwu-ai/kaiwu/internal/hardware"
+	"github.com/kaiwu-ai/kaiwu/internal/ide"
+	"github.com/kaiwu-ai/kaiwu/internal/model"
+	"github.com/kaiwu-ai/kaiwu/internal/monitor"
+	"github.com/kaiwu-ai/kaiwu/internal/optimizer"
+	"github.com/kaiwu-ai/kaiwu/internal/proxy"
+)
+
+var version = "dev"
+
+func main() {
+	rootCmd := &cobra.Command{
+		Use:   "kaiwu",
+		Short: "Kaiwu — deploy local LLMs faster than LM Studio / Ollama",
+		Long:  "Kaiwu is a CLI tool that automatically optimizes local LLM deployment.\nSame model, faster speed, zero manual tuning.",
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return config.EnsureConfigDir()
+		},
+		Run: func(cmd *cobra.Command, args []string) {
+			showMainMenu()
+		},
+	}
+
+	rootCmd.AddCommand(
+		newRunCmd(),
+		newStopCmd(),
+		newStatusCmd(),
+		newProbeCmd(),
+		newInjectCmd(),
+		newBenchCmd(),
+		newListCmd(),
+		newConfigCmd(),
+		newVersionCmd(),
+	)
+
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print Kaiwu version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("Kaiwu %s\n", version)
+		},
+	}
+}
+
+func newRunCmd() *cobra.Command {
+	var fast bool
+	var bench bool
+	var ctxSize int
+	cmd := &cobra.Command{
+		Use:   "run <model>",
+		Short: "Deploy and start a model",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runModel(args[0], fast, bench, ctxSize)
+		},
+	}
+	cmd.Flags().BoolVar(&fast, "fast", false, "Skip warmup, use cached profile")
+	cmd.Flags().BoolVar(&bench, "bench", false, "Run benchmark after starting")
+	// 微调模式：手动指定上下文大小（覆盖自动计算）
+	// 建议值：4096, 8192, 16384, 32768, 65536, 131072
+	// 越大上下文越长但越慢，越小速度越快但上下文短
+	// 0 = 自动模式（根据 VRAM 和模型大小动态计算最优值）
+	cmd.Flags().IntVar(&ctxSize, "ctx-size", 0, "手动指定上下文大小（0=自动）")
+	return cmd
+}
+
+func newStopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the running model",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return stopModel()
+		},
+	}
+}
+
+func newStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show running model status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return showStatus()
+		},
+	}
+}
+
+func newProbeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "probe",
+		Short: "Output hardware fingerprint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return probeHardware()
+		},
+	}
+}
+
+func newInjectCmd() *cobra.Command {
+	var ide string
+	var undo bool
+	cmd := &cobra.Command{
+		Use:   "inject",
+		Short: "Inject IDE configuration",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return injectIDE(ide, undo)
+		},
+	}
+	cmd.Flags().StringVar(&ide, "ide", "", "Target IDE: all, cc, codex, cursor")
+	cmd.Flags().BoolVar(&undo, "undo", false, "Restore original IDE configs")
+	return cmd
+}
+
+func newBenchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "bench",
+		Short: "Benchmark the running model",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBench()
+		},
+	}
+}
+
+func newListCmd() *cobra.Command {
+	var installed bool
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List supported models",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return listModels(installed)
+		},
+	}
+	cmd.Flags().BoolVar(&installed, "installed", false, "Only show downloaded models")
+	return cmd
+}
+
+func newConfigCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Manage configuration",
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "show",
+		Short: "Show current configuration",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return showConfig()
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "set <key=value>",
+		Short: "Set a configuration value",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return setConfig(args[0])
+		},
+	})
+	return cmd
+}
+
+// ── TUI helpers ──────────────────────────────────────────────────────
+
+var dim = color.New(color.FgHiBlack) // 灰色，用于次要信息和导流文字
+
+// displayWidth 计算字符串在终端的显示宽度（中文占2列，ASCII占1列）
+func displayWidth(s string) int {
+	width := 0
+	for _, r := range s {
+		if r < 128 {
+			width++ // ASCII 字符占1列
+		} else {
+			width += 2 // 中文等宽字符占2列
+		}
+	}
+	return width
+}
+
+func printLogo() {
+	blue := color.New(color.FgBlue)
+	blue.Print(`
+██╗  ██╗ █████╗ ██╗██╗    ██╗██╗   ██╗
+██║ ██╔╝██╔══██╗██║██║    ██║██║   ██║
+█████╔╝ ███████║██║██║ █╗ ██║██║   ██║
+██╔═██╗ ██╔══██║██║██║███╗██║██║   ██║
+██║  ██╗██║  ██║██║╚███╔███╔╝╚██████╔╝
+╚═╝  ╚═╝╚═╝  ╚═╝╚═╝ ╚══╝╚══╝  ╚═════╝
+`)
+	fmt.Printf("本地大模型部署器 v%s · llama.cpp b8864\n", version)
+	dim.Println("by llmbbs.ai · 本地 AI 技术社区")
+}
+
+// modelDirDisplay returns the display path for the model directory
+func modelDirDisplay() string {
+	if runtime.GOOS == "windows" {
+		return config.ModelDir() // Windows: 展开完整路径
+	}
+	return "~/.kaiwu/models/"
+}
+
+func showMainMenu() {
+	printLogo()
+
+	// ── 命令列表 ──
+	fmt.Println()
+	dim.Println("── 命令 ──────────────────────────────────────────")
+	cmdBlue := color.New(color.FgBlue)
+	tag := color.New(color.FgBlue)
+
+	cmds := []struct{ name, desc, extra string }{
+		{"kaiwu run <model>", "启动模型服务，自动调参", "[推荐]"},
+		{"kaiwu list", "列出已下载的模型", ""},
+		{"kaiwu bench <model>", "重新测速并更新参数缓存", ""},
+		{"kaiwu inject", "注入 IDE 配置（CC/Cursor/Codex）", ""},
+		{"kaiwu stop", "停止当前运行的服务", ""},
+		{"kaiwu status", "查看当前服务状态", ""},
+	}
+	for _, c := range cmds {
+		cmdBlue.Printf("  %-25s", c.name)
+		dim.Printf(" %s", c.desc)
+		if c.extra != "" {
+			tag.Printf("  %s", c.extra)
+		}
+		fmt.Println()
+	}
+
+	// ── 已下载模型 ──
+	fmt.Println()
+	dim.Println("── 本地模型 ────────────────────────────────────────")
+	db, err := model.LoadStore()
+	if err == nil {
+		green := color.New(color.FgGreen)
+		for _, m := range db.ListAll() {
+			green.Print("  ● ")
+			fmt.Printf("%s", m.DisplayName)
+			if len(m.Quantizations) > 0 {
+				q := m.Quantizations[0]
+				dim.Printf("  %s · %.1f GB", q.ID, q.Size_GB)
+			}
+			if m.Arch != "" {
+				dim.Printf(" · %s", m.Arch)
+			}
+			fmt.Println()
+		}
+	}
+
+	// 模型文件夹路径 + 换目录提示
+	fmt.Println()
+	dim.Printf("  模型文件夹：%s\n", modelDirDisplay())
+	dim.Println("  将 .gguf 文件放入此目录，Kaiwu 自动识别")
+	// 提示用户如何更换模型文件夹，避免 C 盘空间不足
+	// 运行: kaiwu config set model_dir=D:\models
+	// 即可将模型存储迁移到其他盘，之后手动移动已有 .gguf 文件即可
+	dim.Println("  如需更换文件夹: kaiwu config set model_dir=D:\\your\\path")
+
+	fmt.Println()
+	fmt.Print("  ")
+	color.New(color.FgGreen).Print("→")
+	fmt.Print(" 运行 ")
+	color.New(color.FgBlue).Print("kaiwu run qwen3-30b")
+	fmt.Println(" 开始使用")
+
+	dim.Println("  → 更多模型推荐和讨论：llmbbs.ai")
+	fmt.Println()
+}
+
+func runModel(modelName string, fast, bench bool, ctxSize int) error {
+	printLogo()
+	fmt.Println()
+
+	// [1/5] Probe hardware
+	fmt.Printf("[1/6] Probing hardware...\n")
+	hw, err := hardware.Probe()
+	if err != nil {
+		return fmt.Errorf("hardware probe failed: %w", err)
+	}
+	gpu := hw.PrimaryGPU()
+	if gpu != nil {
+		fmt.Printf("      GPU: %s (SM%s, %d MB VRAM, %.0f GB/s)\n",
+			gpu.Name, strings.ReplaceAll(gpu.ComputeCap, ".", ""), gpu.VRAM_MB, gpu.MemBandwidth_GBs)
+	}
+	fmt.Printf("      RAM: %d GB %s\n", hw.RAM.Total_MB/1024, strings.ToUpper(hw.RAM.Type))
+	fmt.Printf("      OS:  %s %s\n", hw.OS.Platform, hw.OS.Arch)
+
+	// Validate CUDA version for Blackwell
+	if err := engine.ValidateCUDAVersion(hw); err != nil {
+		return err
+	}
+
+	// [2/5] Select configuration
+	fmt.Printf("\n[2/6] Selecting configuration...\n")
+	db, err := model.LoadStore()
+	if err != nil {
+		return fmt.Errorf("failed to load model database: %w", err)
+	}
+	modelDef, err := db.GetOrDetect(modelName)
+	if err != nil {
+		return err
+	}
+	profile, err := model.Match(modelDef, hw)
+	if err != nil {
+		return err
+	}
+	// 微调模式：用户手动指定 ctx
+	if ctxSize > 0 {
+		profile.CtxOverride = ctxSize
+	}
+	fmt.Printf("      Model:  %s (%s, %.0fB", profile.DisplayName, profile.Arch, modelDef.TotalParams_B)
+	if modelDef.IsMoE() {
+		fmt.Printf(" total / %.0fB active", modelDef.ActiveParams_B)
+	}
+	fmt.Printf(")\n")
+	fmt.Printf("      Quant:  %s (%.1f GB)\n", profile.Quant, profile.Size_GB)
+	fmt.Printf("      Mode:   %s", profile.Mode)
+	if profile.Mode == "moe_offload" {
+		fmt.Printf(" (experts on CPU)")
+	}
+	fmt.Printf("\n")
+	if profile.NativeMTP {
+		fmt.Printf("      Accel:  Flash Attention + MTP (native)\n")
+	} else {
+		fmt.Printf("      Accel:  Flash Attention\n")
+	}
+
+	// [3/5] Check files
+	fmt.Printf("\n[3/6] Checking files...\n")
+	binaryPath, err := engine.EnsureBinary(hw)
+	if err != nil {
+		return fmt.Errorf("failed to ensure binary: %w", err)
+	}
+	fmt.Printf("      Binary: %s [cached]\n", filepath.Base(binaryPath))
+
+	modelPath, err := model.EnsureFile(profile)
+	if err != nil {
+		return fmt.Errorf("failed to ensure model file: %w", err)
+	}
+	fmt.Printf("      Model:  %s [cached]\n", filepath.Base(modelPath))
+
+	// [4/6] OOM preflight check
+	fmt.Printf("\n[4/6] Preflight check...\n")
+	if err := engine.PreflightCheck(profile, hw); err != nil {
+		return err
+	}
+	fmt.Printf("      ✓ VRAM sufficient\n")
+
+	// [5/6] Warmup benchmark
+	fmt.Printf("\n[5/6] Warmup benchmark...\n")
+	optimized, err := optimizer.Warmup(profile, binaryPath, modelPath, hw, fast)
+	if err != nil {
+		fmt.Printf("      ⚠️  Warmup failed: %v\n", err)
+		fmt.Printf("      Using default parameters\n")
+	} else {
+		fmt.Printf("      ✓ %.1f tok/s\n", optimized.MeasuredTPS)
+	}
+
+	// [6/6] Start server + proxy
+	fmt.Printf("\n[6/6] Starting server...\n")
+	cfg, _ := config.Load()
+
+	// Use warmup-optimized args if available
+	var optimizedArgs []string
+	if optimized != nil {
+		optimizedArgs = optimized.LaunchArgs
+	}
+	eng, err := engine.StartWithArgs(profile, binaryPath, modelPath, hw, optimizedArgs)
+	if err != nil {
+		return fmt.Errorf("failed to start llama-server: %w", err)
+	}
+	fmt.Printf("      llama-server started (PID %d, port %d)\n", eng.PID, eng.Port)
+
+	// Start proxy
+	proxyServer := proxy.NewServer(cfg.ProxyPort, eng.Port, profile.ModelID)
+	proxyServer.StartAsync()
+	fmt.Printf("      Kaiwu proxy started (port %d)\n", cfg.ProxyPort)
+
+	// Start monitor
+	mon := monitor.NewMonitor(eng.Port, profile.DisplayName)
+	mon.StartAsync()
+
+	tpsStr := ""
+	if optimized != nil {
+		tpsStr = fmt.Sprintf(" @ %.1f tok/s", optimized.MeasuredTPS)
+	}
+
+	// Ready 框
+	fmt.Println()
+	boxWidth := 51 // 框内容宽度（不含边框）
+	fmt.Println("  ┌─────────────────────────────────────────────────┐")
+
+	// 第一行：Ready 状态
+	readyText := fmt.Sprintf("Ready — %s%s", profile.DisplayName, tpsStr)
+	readyWidth := displayWidth(readyText)
+	pad := boxWidth - readyWidth
+	if pad < 1 {
+		pad = 1
+	}
+	color.Green("  │  %s%s│\n", readyText, strings.Repeat(" ", pad))
+
+	// 第二行：API 地址
+	apiText := fmt.Sprintf("API: http://127.0.0.1:%d/v1/chat/completions", cfg.ProxyPort)
+	apiWidth := displayWidth(apiText)
+	pad2 := boxWidth - apiWidth
+	if pad2 < 1 {
+		pad2 = 1
+	}
+	fmt.Printf("  │  %s%s│\n", apiText, strings.Repeat(" ", pad2))
+
+	// 第三行：模型文件夹
+	modelDirText := fmt.Sprintf("模型文件夹: %s", modelDirDisplay())
+	modelDirWidth := displayWidth(modelDirText)
+	pad3 := boxWidth - modelDirWidth
+	if pad3 < 1 {
+		pad3 = 1
+	}
+	dim.Printf("  │  %s%s│\n", modelDirText, strings.Repeat(" ", pad3))
+
+	fmt.Println("  └─────────────────────────────────────────────────┘")
+
+	fmt.Println()
+	fmt.Printf("  运行 ")
+	color.New(color.FgBlue).Print("kaiwu inject")
+	fmt.Println(" 接入 IDE · Ctrl+C 停止")
+	fmt.Println()
+
+	// Block until interrupted
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	<-sigCh
+
+	fmt.Println("\n正在停止服务...")
+	mon.Stop()
+	proxyServer.Stop()
+	engine.Stop()
+	color.Green("✓ llama-server 已停止\n")
+	color.Green("✓ Kaiwu proxy 已停止\n")
+	fmt.Println()
+	dim.Println("感谢使用 Kaiwu · 访问 llmbbs.ai 获取更多本地 AI 技巧和模型推荐")
+
+	return nil
+}
+
+func stopModel() error {
+	fmt.Println("Stopping model...")
+	if err := engine.Stop(); err != nil {
+		return err
+	}
+	color.Green("✓ Model stopped\n")
+	return nil
+}
+
+func showStatus() error {
+	eng, err := engine.Status()
+	if err != nil {
+		return err
+	}
+	if eng == nil {
+		fmt.Println("No model running.")
+		return nil
+	}
+	fmt.Printf("Model running:\n")
+	fmt.Printf("  PID:  %d\n", eng.PID)
+	fmt.Printf("  Port: %d\n", eng.Port)
+	return nil
+}
+
+func probeHardware() error {
+	hw, err := hardware.Probe()
+	if err != nil {
+		return fmt.Errorf("hardware probe failed: %w", err)
+	}
+
+	jsonStr, err := hw.JSON()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(jsonStr)
+	fmt.Printf("\nFingerprint: %s\n", hw.Fingerprint())
+	return nil
+}
+
+func injectIDE(ideName string, undo bool) error {
+	cfg, _ := config.Load()
+	apiKey := "kw-demo-key"
+
+	if undo {
+		ides := ide.Detect()
+		for _, i := range ides {
+			if !i.Detected {
+				continue
+			}
+			if ideName != "" && ideName != "all" {
+				if !matchesIDEName(i.Name, ideName) {
+					continue
+				}
+			}
+			fmt.Printf("Restoring %s...\n", i.Name)
+			if err := ide.Undo(&i); err != nil {
+				fmt.Printf("  ✗ Failed: %v\n", err)
+			} else {
+				color.Green("  ✓ Restored\n")
+			}
+		}
+		return nil
+	}
+
+	fmt.Println("\nDetecting installed IDEs...")
+	ides := ide.Detect()
+	detected := []ide.IDE{}
+	for _, i := range ides {
+		if i.Detected {
+			detected = append(detected, i)
+			color.Green("  ✓ %s\n", i.Name)
+		} else {
+			fmt.Printf("  ✗ %s (not installed)\n", i.Name)
+		}
+	}
+
+	if len(detected) == 0 {
+		fmt.Println("\nNo supported IDEs detected.")
+		return nil
+	}
+
+	fmt.Println("\nInjecting configuration...")
+	for _, i := range detected {
+		if ideName != "" && ideName != "all" {
+			if !matchesIDEName(i.Name, ideName) {
+				continue
+			}
+		}
+		fmt.Printf("  %s → ", i.Name)
+		if err := ide.Inject(&i, cfg.ProxyPort, apiKey); err != nil {
+			color.Red("Failed: %v\n", err)
+		} else {
+			color.Green("✓\n")
+		}
+	}
+
+	fmt.Println("\nRestart your IDE to apply changes.")
+	fmt.Printf("Model endpoint: http://127.0.0.1:%d\n", cfg.ProxyPort)
+	return nil
+}
+
+func matchesIDEName(fullName, shortName string) bool {
+	shortName = strings.ToLower(shortName)
+	fullName = strings.ToLower(fullName)
+	switch shortName {
+	case "cc", "claude", "claude-code":
+		return strings.Contains(fullName, "claude")
+	case "codex":
+		return strings.Contains(fullName, "codex")
+	case "cursor":
+		return strings.Contains(fullName, "cursor")
+	default:
+		return false
+	}
+}
+
+func runBench() error {
+	fmt.Println("Benchmark (placeholder)")
+	return nil
+}
+
+func listModels(installed bool) error {
+	db, err := model.LoadStore()
+	if err != nil {
+		return err
+	}
+
+	dim.Println("\n── 本地模型 ────────────────────────────────────────")
+	fmt.Println()
+
+	for _, m := range db.ListAll() {
+		color.New(color.FgGreen).Print("  ● ")
+		fmt.Printf("%s\n", color.CyanString(m.DisplayName))
+		fmt.Printf("    ID:     %s\n", m.ID)
+		fmt.Printf("    Arch:   %s", m.Arch)
+		if m.IsMoE() {
+			fmt.Printf(" (%.0fB total / %.0fB active)\n", m.TotalParams_B, m.ActiveParams_B)
+		} else {
+			fmt.Printf(" (%.0fB params)\n", m.TotalParams_B)
+		}
+		fmt.Printf("    Quants: ")
+		for i, q := range m.Quantizations {
+			if i > 0 {
+				fmt.Print(", ")
+			}
+			fmt.Printf("%s (%.1fGB)", q.ID, q.Size_GB)
+		}
+		fmt.Println()
+		fmt.Println()
+	}
+
+	dim.Printf("  模型文件夹：%s\n", modelDirDisplay())
+	dim.Println("  将 .gguf 文件放入此目录，Kaiwu 自动识别")
+	dim.Println("  如需更换文件夹: kaiwu config set model_dir=D:\\your\\path")
+	fmt.Println()
+	dim.Println("  → 更多模型推荐和讨论：llmbbs.ai")
+	fmt.Println()
+
+	return nil
+}
+
+func showConfig() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("HF Mirror:   %s\n", cfg.HFMirror)
+	fmt.Printf("Llama Port:  %d\n", cfg.LlamaPort)
+	fmt.Printf("Proxy Port:  %d\n", cfg.ProxyPort)
+	fmt.Printf("Model Dir:   %s\n", config.ModelDir())
+	fmt.Printf("Config Dir:  %s\n", config.Dir())
+	return nil
+}
+
+func setConfig(kv string) error {
+	parts := strings.SplitN(kv, "=", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid format, use: key=value")
+	}
+	key := strings.TrimSpace(parts[0])
+	value := strings.TrimSpace(parts[1])
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	switch key {
+	case "hf_mirror":
+		cfg.HFMirror = value
+	case "llama_port":
+		port, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid port number: %v", err)
+		}
+		cfg.LlamaPort = port
+	case "proxy_port":
+		port, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid port number: %v", err)
+		}
+		cfg.ProxyPort = port
+	case "log_level":
+		cfg.LogLevel = value
+	case "model_dir":
+		// 空值表示重置为默认
+		if value == "" {
+			cfg.ModelDirOverride = ""
+			color.Green("✓ 模型目录已重置为默认: %s\n", filepath.Join(config.Dir(), "models"))
+		} else {
+			// 验证路径是否存在或可创建
+			if err := os.MkdirAll(value, 0755); err != nil {
+				return fmt.Errorf("无法创建模型目录 %s: %v", value, err)
+			}
+			cfg.ModelDirOverride = value
+			color.Green("✓ 模型目录已设置为: %s\n", value)
+			dim.Println("  提示：请手动将现有 .gguf 文件移动到新目录")
+		}
+	default:
+		return fmt.Errorf("unknown config key: %s (available: hf_mirror, llama_port, proxy_port, log_level, model_dir)", key)
+	}
+
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("failed to save config: %v", err)
+	}
+
+	if key != "model_dir" {
+		color.Green("✓ Config updated: %s = %s\n", key, value)
+	}
+	return nil
+}

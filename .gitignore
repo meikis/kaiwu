@@ -1,0 +1,27 @@
+# Binaries
+dist/
+*.exe
+/kaiwu
+/kaiwu-linux
+
+# Benchmark images
+benchmark/*.png
+
+# Go
+*.test
+*.out
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kaiwu runtime
+.kaiwu/
+*.log

@@ -1,0 +1,153 @@
+name: Build llama-server (TurboQuant iso3)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cuda_version:
+        description: 'CUDA version'
+        required: true
+        default: '12.4'
+        type: choice
+        options:
+          - '12.4'
+
+jobs:
+  # ============================================================
+  # Windows CUDA build
+  # ============================================================
+  windows-cuda:
+    runs-on: windows-2022
+
+    steps:
+      - name: Install CUDA Toolkit 12.4
+        shell: pwsh
+        run: |
+          mkdir -p "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
+          choco install unzip -y
+          curl -O "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.4.127-archive.zip"
+          curl -O "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-12.4.131-archive.zip"
+          curl -O "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-12.4.127-archive.zip"
+          curl -O "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.4.5.8-archive.zip"
+          curl -O "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-12.4.127-archive.zip"
+          curl -O "https://developer.download.nvidia.com/compute/cuda/redist/cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-12.4.127-archive.zip"
+          curl -O "https://developer.download.nvidia.com/compute/cuda/redist/visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-12.4.127-archive.zip"
+          curl -O "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-12.4.127-archive.zip"
+          curl -O "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-12.4.127-archive.zip"
+          unzip '*.zip' -d "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
+          xcopy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\cuda_cudart-windows-x86_64-12.4.127-archive\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" /E /I /H /Y
+          xcopy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\cuda_nvcc-windows-x86_64-12.4.131-archive\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" /E /I /H /Y
+          xcopy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\cuda_nvrtc-windows-x86_64-12.4.127-archive\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" /E /I /H /Y
+          xcopy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\libcublas-windows-x86_64-12.4.5.8-archive\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" /E /I /H /Y
+          xcopy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\cuda_nvtx-windows-x86_64-12.4.127-archive\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" /E /I /H /Y
+          xcopy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\cuda_profiler_api-windows-x86_64-12.4.127-archive\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" /E /I /H /Y
+          xcopy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\visual_studio_integration-windows-x86_64-12.4.127-archive\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" /E /I /H /Y
+          xcopy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\cuda_nvprof-windows-x86_64-12.4.127-archive\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" /E /I /H /Y
+          xcopy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\cuda_cccl-windows-x86_64-12.4.127-archive\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" /E /I /H /Y
+          echo "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Download TurboQuant source
+        shell: pwsh
+        run: |
+          curl -L -o turboquant.zip "https://codeload.github.com/johndpope/llama-cpp-turboquant/zip/refs/heads/feature/planarquant-kv-cache"
+          Expand-Archive turboquant.zip -DestinationPath .
+          Rename-Item llama-cpp-turboquant-feature-planarquant-kv-cache llama-cpp-turboquant
+
+      - name: Fix extern C build bug
+        shell: pwsh
+        run: |
+          $file = "llama-cpp-turboquant\ggml\src\ggml-cpu\ops.cpp"
+          (Get-Content $file) -replace 'extern "C" GGML_API int turbo3_cpu_wht_group_size;', 'extern "C" int turbo3_cpu_wht_group_size;' | Set-Content $file
+
+      - name: Build llama-server
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cd llama-cpp-turboquant
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DLLAMA_BUILD_SERVER=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CUDA=ON ^
+            -DGGML_CUDA_F16=ON ^
+            -DCMAKE_CUDA_ARCHITECTURES="86;89;120"
+          cmake --build build --config Release -t llama-server
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifact
+          # llama-server binary
+          Copy-Item llama-cpp-turboquant\build\bin\Release\llama-server.exe artifact\llama-server-cuda.exe
+          # Required DLLs from build
+          Get-ChildItem llama-cpp-turboquant\build\bin\Release\*.dll | Copy-Item -Destination artifact\
+          # CUDA runtime DLLs
+          $cudaBin = "$env:CUDA_PATH\bin"
+          @("cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll") | ForEach-Object {
+            $src = Join-Path $cudaBin $_
+            if (Test-Path $src) { Copy-Item $src artifact\ }
+          }
+          Get-ChildItem artifact\ | Format-Table Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-turboquant-win-cuda-12.4
+          path: artifact/
+          retention-days: 90
+
+  # ============================================================
+  # Linux CUDA build
+  # ============================================================
+  linux-cuda:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install CUDA Toolkit 12.4
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y cuda-toolkit-12-4 gcc-12 g++-12
+          echo "/usr/local/cuda-12.4/bin" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-12.4/lib64" >> $GITHUB_ENV
+
+      - name: Download TurboQuant source
+        run: |
+          curl -L -o turboquant.zip "https://codeload.github.com/johndpope/llama-cpp-turboquant/zip/refs/heads/feature/planarquant-kv-cache"
+          unzip -q turboquant.zip
+          mv llama-cpp-turboquant-feature-planarquant-kv-cache llama-cpp-turboquant
+
+      - name: Fix extern C build bug
+        run: |
+          sed -i 's/^extern "C" GGML_API int turbo3_cpu_wht_group_size;/extern "C" int turbo3_cpu_wht_group_size;/' \
+            llama-cpp-turboquant/ggml/src/ggml-cpu/ops.cpp
+
+      - name: Build llama-server
+        run: |
+          cd llama-cpp-turboquant
+          cmake -B build \
+            -DGGML_CUDA=ON \
+            -DGGML_CUDA_F16=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="86;89;120" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12
+          cmake --build build --config Release -j$(nproc) --target llama-server
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifact
+          cp llama-cpp-turboquant/build/bin/llama-server artifact/llama-server-cuda
+          cp llama-cpp-turboquant/build/bin/lib*.so artifact/ 2>/dev/null || true
+          chmod +x artifact/llama-server-cuda
+          ls -lh artifact/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-turboquant-linux-cuda-12.4
+          path: artifact/
+          retention-days: 90
