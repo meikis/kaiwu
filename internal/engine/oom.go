@@ -3,8 +3,8 @@ package engine
 import (
 	"fmt"
 
-	"github.com/kaiwu-ai/kaiwu/internal/hardware"
-	"github.com/kaiwu-ai/kaiwu/internal/model"
+	"github.com/val1813/kaiwu/internal/hardware"
+	"github.com/val1813/kaiwu/internal/model"
 )
 
 // PreflightCheck verifies there's enough VRAM to run the model.

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaiwu-ai/kaiwu/internal/config"
+	"github.com/val1813/kaiwu/internal/config"
 )
 
 // HFModelInfo holds cached model info from HuggingFace API

@@ -12,14 +12,14 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/kaiwu-ai/kaiwu/internal/config"
-	"github.com/kaiwu-ai/kaiwu/internal/engine"
-	"github.com/kaiwu-ai/kaiwu/internal/hardware"
-	"github.com/kaiwu-ai/kaiwu/internal/ide"
-	"github.com/kaiwu-ai/kaiwu/internal/model"
-	"github.com/kaiwu-ai/kaiwu/internal/monitor"
-	"github.com/kaiwu-ai/kaiwu/internal/optimizer"
-	"github.com/kaiwu-ai/kaiwu/internal/proxy"
+	"github.com/val1813/kaiwu/internal/config"
+	"github.com/val1813/kaiwu/internal/engine"
+	"github.com/val1813/kaiwu/internal/hardware"
+	"github.com/val1813/kaiwu/internal/ide"
+	"github.com/val1813/kaiwu/internal/model"
+	"github.com/val1813/kaiwu/internal/monitor"
+	"github.com/val1813/kaiwu/internal/optimizer"
+	"github.com/val1813/kaiwu/internal/proxy"
 )
 
 var version = "dev"

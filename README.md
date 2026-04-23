@@ -44,7 +44,7 @@ kaiwu version
 Requirements: Go 1.22+
 
 ```bash
-git clone https://github.com/kaiwu-ai/kaiwu.git
+git clone https://github.com/val1813/kaiwu.git
 cd kaiwu
 
 # Windows

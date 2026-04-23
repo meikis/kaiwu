@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaiwu-ai/kaiwu/internal/config"
-	"github.com/kaiwu-ai/kaiwu/internal/engine"
-	"github.com/kaiwu-ai/kaiwu/internal/hardware"
-	"github.com/kaiwu-ai/kaiwu/internal/model"
+	"github.com/val1813/kaiwu/internal/config"
+	"github.com/val1813/kaiwu/internal/engine"
+	"github.com/val1813/kaiwu/internal/hardware"
+	"github.com/val1813/kaiwu/internal/model"
 )
 
 // OptimizedProfile is the result of warmup benchmark

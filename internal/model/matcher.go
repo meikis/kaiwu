@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kaiwu-ai/kaiwu/internal/config"
-	"github.com/kaiwu-ai/kaiwu/internal/hardware"
+	"github.com/val1813/kaiwu/internal/config"
+	"github.com/val1813/kaiwu/internal/hardware"
 )
 
 // DeployProfile is the result of matching a model to hardware

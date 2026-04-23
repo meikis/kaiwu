@@ -1,4 +1,4 @@
-module github.com/kaiwu-ai/kaiwu
+module github.com/val1813/kaiwu
 
 go 1.22
 

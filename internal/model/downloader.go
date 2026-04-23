@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kaiwu-ai/kaiwu/internal/config"
-	"github.com/kaiwu-ai/kaiwu/internal/download"
+	"github.com/val1813/kaiwu/internal/config"
+	"github.com/val1813/kaiwu/internal/download"
 )
 
 // EnsureFile ensures the model GGUF file is available locally

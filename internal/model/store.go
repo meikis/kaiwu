@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kaiwu-ai/kaiwu/internal/config"
+	"github.com/val1813/kaiwu/internal/config"
 	"gopkg.in/yaml.v3"
 )
 

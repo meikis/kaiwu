@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaiwu-ai/kaiwu/internal/proxy"
+	"github.com/val1813/kaiwu/internal/proxy"
 )
 
 // MonitorData holds all collected metrics

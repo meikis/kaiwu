@@ -11,9 +11,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/kaiwu-ai/kaiwu/internal/config"
-	"github.com/kaiwu-ai/kaiwu/internal/download"
-	"github.com/kaiwu-ai/kaiwu/internal/hardware"
+	"github.com/val1813/kaiwu/internal/config"
+	"github.com/val1813/kaiwu/internal/download"
+	"github.com/val1813/kaiwu/internal/hardware"
 )
 
 const releaseTag = "b8864"

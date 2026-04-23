@@ -1,8 +1,8 @@
 package optimizer
 
 import (
-	"github.com/kaiwu-ai/kaiwu/internal/hardware"
-	"github.com/kaiwu-ai/kaiwu/internal/model"
+	"github.com/val1813/kaiwu/internal/hardware"
+	"github.com/val1813/kaiwu/internal/model"
 )
 
 // StartingParams holds initial parameter recommendations
