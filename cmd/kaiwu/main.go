@@ -296,8 +296,13 @@ func runModel(modelName string, fast, bench bool, ctxSize int, reset bool) error
 	}
 	gpu := hw.PrimaryGPU()
 	if gpu != nil {
-		fmt.Printf("      GPU: %s (SM%s, %d MB VRAM, %.0f GB/s)\n",
-			gpu.Name, strings.ReplaceAll(gpu.ComputeCap, ".", ""), gpu.VRAM_MB, gpu.MemBandwidth_GBs)
+		if hw.GPUCount() > 1 {
+			fmt.Printf("      GPU: %s × %d (SM%s, %d MB VRAM each, %.0f GB/s)\n",
+				gpu.Name, hw.GPUCount(), strings.ReplaceAll(gpu.ComputeCap, ".", ""), gpu.VRAM_MB, gpu.MemBandwidth_GBs)
+		} else {
+			fmt.Printf("      GPU: %s (SM%s, %d MB VRAM, %.0f GB/s)\n",
+				gpu.Name, strings.ReplaceAll(gpu.ComputeCap, ".", ""), gpu.VRAM_MB, gpu.MemBandwidth_GBs)
+		}
 	}
 	fmt.Printf("      RAM: %d GB %s\n", hw.RAM.Total_MB/1024, strings.ToUpper(hw.RAM.Type))
 	fmt.Printf("      OS:  %s %s\n", hw.OS.Platform, hw.OS.Arch)

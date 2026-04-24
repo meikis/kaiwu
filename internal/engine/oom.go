@@ -15,7 +15,7 @@ func PreflightCheck(profile *model.DeployProfile, hw *hardware.HardwareProbe) er
 		return nil
 	}
 
-	vramGB := float64(gpu.VRAM_MB) / 1024.0
+	vramGB := float64(hw.TotalVRAM_MB()) / 1024.0 // 多卡总VRAM
 	ramGB := float64(hw.RAM.Total_MB) / 1024.0
 	totalAvailGB := vramGB + ramGB*0.8
 
@@ -103,14 +103,18 @@ func IdealStartCtx(profile *model.DeployProfile, hw *hardware.HardwareProbe) int
 		nativeMax = 131072
 	}
 
-	// 可用 VRAM（实际 free）
-	freeVRAM := float64(gpu.VRAMFree_MB)
-	if freeVRAM <= 0 {
-		freeVRAM = float64(gpu.VRAM_MB) - 1500
+	// 可用 VRAM：多卡求和（llama-server 自动分层到所有 GPU）
+	var freeVRAM float64
+	for _, g := range hw.GPUs {
+		if g.VRAMFree_MB > 0 {
+			freeVRAM += float64(g.VRAMFree_MB)
+		} else {
+			freeVRAM += float64(g.VRAM_MB) - 1500
+		}
 	}
 
-	// 减去 577 MiB safety buffer（oobabooga 95% 置信度）
-	availVRAM := freeVRAM - 577
+	// 减去 577 MiB safety buffer（oobabooga 95% 置信度）× GPU 数量
+	availVRAM := freeVRAM - 577*float64(hw.GPUCount())
 
 	if availVRAM < 1000 {
 		return 4096

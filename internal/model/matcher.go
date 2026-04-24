@@ -36,11 +36,7 @@ type DeployProfile struct {
 
 // Match selects the best quantization for the given hardware
 func Match(model *ModelDef, hw *hardware.HardwareProbe) (*DeployProfile, error) {
-	gpu := hw.PrimaryGPU()
-	vramGB := 0.0
-	if gpu != nil {
-		vramGB = float64(gpu.VRAM_MB) / 1024.0
-	}
+	vramGB := float64(hw.TotalVRAM_MB()) / 1024.0 // 多卡总VRAM
 	ramGB := float64(hw.RAM.Total_MB) / 1024.0
 
 	profile := &DeployProfile{

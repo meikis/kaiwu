@@ -341,11 +341,7 @@ func alignToPow2(n int) int {
 
 // BuildArgs constructs llama-server arguments with explicit ctx size and batch sizes.
 func BuildArgs(profile *model.DeployProfile, modelPath string, port int, hw *hardware.HardwareProbe, ctxSize, batchSize, ubatchSize int) []string {
-	gpu := hw.PrimaryGPU()
-	vramMB := 0
-	if gpu != nil {
-		vramMB = gpu.VRAM_MB
-	}
+	vramMB := hw.TotalVRAM_MB() // 多卡总VRAM
 
 	// KV cache 类型：基于 VRAM 计算自动选择最快的类型
 	// 优先 f16（最快），装不下就降到 q8_0+q4_0，再不行用 iso3

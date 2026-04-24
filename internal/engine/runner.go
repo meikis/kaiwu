@@ -274,11 +274,7 @@ func Status() (*RunningEngine, error) {
 // This is the fallback path when warmup cache is unavailable.
 // Logic mirrors optimizer.BuildArgs to keep parameters consistent.
 func buildArgs(profile *model.DeployProfile, modelPath string, port int, hw *hardware.HardwareProbe, ctxSize int) []string {
-	gpu := hw.PrimaryGPU()
-	vramMB := 0
-	if gpu != nil {
-		vramMB = gpu.VRAM_MB
-	}
+	vramMB := hw.TotalVRAM_MB() // 多卡总VRAM
 
 	threads := threadsForMode(profile.Mode, hw)
 

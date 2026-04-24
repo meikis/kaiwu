@@ -47,17 +47,28 @@ func collectGPU(d *MonitorData) {
 	if err != nil {
 		return
 	}
-	line := strings.TrimSpace(string(out))
-	// Handle multi-GPU: take first line
-	if idx := strings.Index(line, "\n"); idx > 0 {
-		line = line[:idx]
-	}
-	parts := strings.Split(line, ",")
-	if len(parts) >= 4 {
-		d.VRAM_Used_MB, _ = strconv.Atoi(strings.TrimSpace(parts[0]))
-		d.VRAM_Total_MB, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
-		d.GPU_Temp_C, _ = strconv.Atoi(strings.TrimSpace(parts[2]))
-		d.GPU_Util_Pct, _ = strconv.Atoi(strings.TrimSpace(parts[3]))
+	// 多卡求和：VRAM 累加，温度/利用率取最大值
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ",")
+		if len(parts) >= 4 {
+			used, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+			total, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+			temp, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
+			util, _ := strconv.Atoi(strings.TrimSpace(parts[3]))
+			d.VRAM_Used_MB += used
+			d.VRAM_Total_MB += total
+			if temp > d.GPU_Temp_C {
+				d.GPU_Temp_C = temp
+			}
+			if util > d.GPU_Util_Pct {
+				d.GPU_Util_Pct = util
+			}
+		}
 	}
 }
 

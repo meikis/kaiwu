@@ -115,7 +115,7 @@ func (p *HardwareProbe) GPUCount() int {
 }
 
 // Fingerprint returns a unique hardware fingerprint for profile caching
-// Format: "sm89_24576mb_ddr5"
+// Format: "sm89_24576mb_ddr5" (single GPU) or "sm89_2x24576mb_ddr5" (multi GPU)
 func (p *HardwareProbe) Fingerprint() string {
 	gpu := p.PrimaryGPU()
 	if gpu == nil {
@@ -126,6 +126,9 @@ func (p *HardwareProbe) Fingerprint() string {
 	cc := gpu.ComputeCap
 	cc = cc[:len(cc)-2] + cc[len(cc)-1:]
 
+	if len(p.GPUs) > 1 {
+		return fmt.Sprintf("sm%s_%dx%dmb_%s", cc, len(p.GPUs), gpu.VRAM_MB, p.RAM.Type)
+	}
 	return fmt.Sprintf("sm%s_%dmb_%s", cc, gpu.VRAM_MB, p.RAM.Type)
 }
 

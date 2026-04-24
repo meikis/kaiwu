@@ -20,11 +20,7 @@ type StartingParams struct {
 
 // DeriveStartingParams applies the three parameter rules from spec
 func DeriveStartingParams(hw *hardware.HardwareProbe, profile *model.DeployProfile) StartingParams {
-	gpu := hw.PrimaryGPU()
-	vramMB := 0
-	if gpu != nil {
-		vramMB = gpu.VRAM_MB
-	}
+	vramMB := hw.TotalVRAM_MB() // 多卡总VRAM
 
 	isMoE := profile.Arch == "moe"
 	modelFits := profile.Size_GB < float64(vramMB/1024)*0.85
