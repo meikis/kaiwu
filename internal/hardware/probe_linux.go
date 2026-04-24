@@ -27,7 +27,14 @@ func detectNVIDIA() ([]GPUInfo, error) {
 	gpus := make([]GPUInfo, 0, len(lines))
 
 	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 		fields := strings.Split(line, ", ")
+		if len(fields) < 7 {
+			fields = strings.Split(line, ",")
+		}
 		if len(fields) < 7 {
 			continue
 		}
