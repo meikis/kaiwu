@@ -136,6 +136,28 @@ func (m *ModelDef) IsMoE() bool {
 
 // GetOrDetect tries the database first, then falls back to GGUF auto-detection.
 func (db *ModelDB) GetOrDetect(name string) (*ModelDef, error) {
+	// 0. Direct file path: if the input is an existing .gguf file, read it directly
+	if strings.HasSuffix(strings.ToLower(name), ".gguf") {
+		if info, err := os.Stat(name); err == nil && !info.IsDir() {
+			meta, err := ReadGGUFMeta(name)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read GGUF file: %w", err)
+			}
+			def := metaToModelDef(meta, filepath.Base(name))
+			return &def, nil
+		}
+		// Also check in model directory
+		modelDirPath := filepath.Join(config.ModelDir(), name)
+		if info, err := os.Stat(modelDirPath); err == nil && !info.IsDir() {
+			meta, err := ReadGGUFMeta(modelDirPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read GGUF file: %w", err)
+			}
+			def := metaToModelDef(meta, filepath.Base(name))
+			return &def, nil
+		}
+	}
+
 	// 1. Try exact/fuzzy match in database
 	if def, err := db.Get(name); err == nil {
 		return def, nil

@@ -288,6 +288,27 @@ models:
     kv_heads: 4
     native_mtp: true
     quantizations:
+      - id: apex-i-quality
+        hf_repo: "mudler/Qwen3-30B-A3B-APEX-GGUF"
+        hf_file: "*APEX-I-Quality*"
+        size_gb: 21
+        quality_loss_pct: 0.3
+        min_vram_gb: 18
+        min_ram_gb: 4
+      - id: apex-i-balanced
+        hf_repo: "mudler/Qwen3-30B-A3B-APEX-GGUF"
+        hf_file: "*APEX-I-Balanced*"
+        size_gb: 18
+        quality_loss_pct: 0.8
+        min_vram_gb: 15
+        min_ram_gb: 4
+      - id: apex-i-speed
+        hf_repo: "mudler/Qwen3-30B-A3B-APEX-GGUF"
+        hf_file: "*APEX-I-Speed*"
+        size_gb: 15
+        quality_loss_pct: 1.5
+        min_vram_gb: 12
+        min_ram_gb: 4
       - id: ud-q5-k-xl
         hf_repo: "unsloth/Qwen3-30B-A3B-GGUF"
         hf_file: "*UD-Q5_K_XL*"
@@ -334,6 +355,27 @@ models:
     kv_heads: 4
     native_mtp: true
     quantizations:
+      - id: apex-i-quality
+        hf_repo: "mudler/Qwen3.6-35B-A3B-APEX-GGUF"
+        hf_file: "*APEX-I-Quality*"
+        size_gb: 24
+        quality_loss_pct: 0.3
+        min_vram_gb: 21
+        min_ram_gb: 4
+      - id: apex-i-balanced
+        hf_repo: "mudler/Qwen3.6-35B-A3B-APEX-GGUF"
+        hf_file: "*APEX-I-Balanced*"
+        size_gb: 21
+        quality_loss_pct: 0.8
+        min_vram_gb: 18
+        min_ram_gb: 4
+      - id: apex-i-speed
+        hf_repo: "mudler/Qwen3.6-35B-A3B-APEX-GGUF"
+        hf_file: "*APEX-I-Speed*"
+        size_gb: 18
+        quality_loss_pct: 1.5
+        min_vram_gb: 15
+        min_ram_gb: 4
       - id: ud-q5-k-xl
         hf_repo: "unsloth/Qwen3.6-35B-A3B-GGUF"
         hf_file: "*UD-Q5_K_XL*"
