@@ -32,6 +32,7 @@ type ModelDef struct {
 	ExpertsActive      int            `yaml:"experts_active"`
 	KVHeads            int            `yaml:"kv_heads"`
 	HeadDim            int            `yaml:"head_dim"`
+	IsHybrid           bool           `yaml:"is_hybrid"` // hybrid attention+recurrent (DeltaNet/SSM/Mamba)
 	NativeMTP          bool           `yaml:"native_mtp"`
 	Quantizations      []Quantization `yaml:"quantizations"`
 	MoeOffloadTemplate string         `yaml:"moe_offload_template"`

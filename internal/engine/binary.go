@@ -284,14 +284,22 @@ func extractFromTarGz(archivePath, destPath string) error {
 	return fmt.Errorf("llama-server not found in archive")
 }
 
-// ValidateCUDAVersion checks for Blackwell + CUDA 13.x incompatibility
+// ValidateCUDAVersion checks for known CUDA driver issues
 func ValidateCUDAVersion(hw *hardware.HardwareProbe) error {
 	gpu := hw.PrimaryGPU()
-	if gpu == nil || !gpu.IsBlackwell {
+	if gpu == nil {
 		return nil
 	}
 
-	if strings.HasPrefix(gpu.CUDADriver, "13.") {
+	// CUDA 13.2 has a confirmed bug affecting low-bit quantization inference
+	// (garbled output, repeated tokens). Downgrade to 13.1 resolves it.
+	if gpu.CUDADriver == "13.2" {
+		fmt.Printf("      ⚠️  CUDA %s detected — known bug with low-bit quantization\n", gpu.CUDADriver)
+		fmt.Println("      If you see garbled output, downgrade driver to CUDA 13.1")
+	}
+
+	// Blackwell + CUDA 13.x: use CUDA 12.4 binary for stability
+	if gpu.IsBlackwell && strings.HasPrefix(gpu.CUDADriver, "13.") {
 		fmt.Printf("      Warning: RTX 50 series with CUDA %s detected\n", gpu.CUDADriver)
 		fmt.Println("      Kaiwu will use CUDA 12.4 binary for stability.")
 	}

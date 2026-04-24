@@ -25,6 +25,7 @@ type GGUFMeta struct {
 	ContextLength int
 	FileType      int
 	FileSize      int64
+	IsHybrid      bool // true if model has recurrent/DeltaNet/SSM layers mixed with attention
 }
 
 // GGUF value type constants (GGUF v3 spec)
@@ -226,11 +227,39 @@ func ReadGGUFMeta(path string) (*GGUFMeta, error) {
 						meta.EmbeddingDim = int(v)
 					}
 				}
+
+				// Detect hybrid architecture: tensor keys containing ssm/delta/recurrent
+				if strings.Contains(key, ".ssm.") || strings.Contains(key, ".delta") ||
+					strings.Contains(key, ".recurrent") || strings.Contains(key, ".mamba") {
+					meta.IsHybrid = true
+				}
 			}
 		}
 	}
 
+	// Architecture-level hybrid detection (fallback for models without ssm/delta tensor keys)
+	if !meta.IsHybrid {
+		meta.IsHybrid = isHybridArchitecture(meta.Architecture)
+	}
+
 	return meta, nil
+}
+
+// isHybridArchitecture returns true for known hybrid (attention + recurrent) architectures.
+// These models mix standard attention layers with DeltaNet/SSM/Mamba layers,
+// meaning not all layers have KV cache — iso3/TurboQuant breaks on these.
+func isHybridArchitecture(arch string) bool {
+	a := strings.ToLower(arch)
+	// Known hybrid architectures:
+	// - qwen3_next / qwen3next: Qwen3.6 with Gated DeltaNet layers
+	// - jamba: Jamba (attention + Mamba)
+	// - hybrid: generic hybrid marker
+	return strings.Contains(a, "qwen3_next") ||
+		strings.Contains(a, "qwen3next") ||
+		strings.Contains(a, "jamba") ||
+		strings.Contains(a, "hybrid") ||
+		strings.Contains(a, "rwkv") ||
+		strings.Contains(a, "mamba")
 }
 
 // readGGUFString reads a GGUF string: uint64 length followed by UTF-8 bytes.
@@ -442,6 +471,7 @@ func metaToModelDef(meta *GGUFMeta, filename string) ModelDef {
 		ExpertsActive:      meta.ExpertsActive,
 		KVHeads:            meta.KVHeads,
 		HeadDim:            meta.HeadDim,
+		IsHybrid:           meta.IsHybrid,
 		MoeOffloadTemplate: moeTemplate,
 		StopTokens:         stopTokensForArch(meta.Architecture),
 		Quantizations: []Quantization{

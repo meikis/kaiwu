@@ -370,6 +370,9 @@ func runModel(modelName string, fast, bench bool, ctxSize int, reset bool, llama
 	if hw.GPUCount() > 1 && hw.HasNVLink() {
 		accel = append(accel, "NVLink")
 	}
+	if profile.IsHybrid {
+		accel = append(accel, "SWA-Full (hybrid arch)")
+	}
 	if len(accel) > 0 {
 		fmt.Printf("      Accel:  %s\n", strings.Join(accel, " + "))
 	}

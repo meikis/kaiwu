@@ -32,6 +32,7 @@ type DeployProfile struct {
 	NativeCtx    int  // 模型原生最大上下文（从 GGUF context_length 读取）
 	CtxOverride  int  // 微调模式：用户手动指定的 ctx 大小，0 = 自动
 	HasIsoQuant  bool // IsoQuant KV cache 压缩是否可用
+	IsHybrid     bool // hybrid attention+recurrent architecture (DeltaNet/SSM/Mamba)
 }
 
 // Match selects the best quantization for the given hardware
@@ -45,11 +46,12 @@ func Match(model *ModelDef, hw *hardware.HardwareProbe) (*DeployProfile, error) 
 		Family:      model.Family,
 		Arch:        model.Arch,
 		NativeMTP:   model.NativeMTP,
+		IsHybrid:    model.IsHybrid,
 		StopTokens:  model.StopTokens,
 		Layers:      model.Layers,
 		KVHeads:     model.KVHeads,
 		HeadDim:     model.HeadDim,
-		HasIsoQuant: true, // 默认启用 iso3，不支持时 llama-server 会自动回退
+		HasIsoQuant: !model.IsHybrid, // iso3 breaks on hybrid architectures (DeltaNet layers have no KV cache)
 	}
 
 	// Strategy 1: Full GPU — all layers in VRAM
@@ -288,5 +290,10 @@ func enrichFromGGUF(profile *DeployProfile) {
 	}
 	if meta.EmbeddingDim > 0 {
 		profile.EmbeddingDim = meta.EmbeddingDim
+	}
+	// Update hybrid detection from actual GGUF metadata (overrides yaml)
+	if meta.IsHybrid {
+		profile.IsHybrid = true
+		profile.HasIsoQuant = false
 	}
 }

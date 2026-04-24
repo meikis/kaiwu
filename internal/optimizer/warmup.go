@@ -383,6 +383,11 @@ func BuildArgs(profile *model.DeployProfile, modelPath string, port int, hw *har
 		args = append(args, "-sm", "graph")
 	}
 
+	// Hybrid architecture (DeltaNet/SSM): full SWA KV cache for correct long-context behavior
+	if profile.IsHybrid {
+		args = append(args, "--swa-full")
+	}
+
 	// mlock: lock model in RAM when headroom is sufficient
 	if useMlock {
 		args = append(args, "--mlock")
