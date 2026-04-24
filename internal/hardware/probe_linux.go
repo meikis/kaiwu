@@ -12,59 +12,6 @@ import (
 	"strings"
 )
 
-// detectNVIDIA uses nvidia-smi to detect NVIDIA GPUs
-func detectNVIDIA() ([]GPUInfo, error) {
-	cmd := exec.Command("nvidia-smi",
-		"--query-gpu=index,name,memory.total,memory.used,memory.free,compute_cap,driver_version",
-		"--format=csv,noheader,nounits")
-
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	gpus := make([]GPUInfo, 0, len(lines))
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Split(line, ", ")
-		if len(fields) < 7 {
-			fields = strings.Split(line, ",")
-		}
-		if len(fields) < 7 {
-			continue
-		}
-
-		index, _ := strconv.Atoi(strings.TrimSpace(fields[0]))
-		name := strings.TrimSpace(fields[1])
-		vramTotal, _ := strconv.Atoi(strings.TrimSpace(fields[2]))
-		vramUsed, _ := strconv.Atoi(strings.TrimSpace(fields[3]))
-		vramFree, _ := strconv.Atoi(strings.TrimSpace(fields[4]))
-		computeCap := strings.TrimSpace(fields[5])
-		driver := strings.TrimSpace(fields[6])
-
-		isBlackwell := strings.HasPrefix(computeCap, "12")
-
-		gpus = append(gpus, GPUInfo{
-			Index:            index,
-			Name:             name,
-			VRAM_MB:          vramTotal,
-			VRAMUsed_MB:      vramUsed,
-			VRAMFree_MB:      vramFree,
-			ComputeCap:       computeCap,
-			CUDADriver:       driver,
-			MemBandwidth_GBs: estimateBandwidth(name),
-			IsBlackwell:      isBlackwell,
-		})
-	}
-
-	return gpus, nil
-}
-
 // detectAMD detects AMD GPUs via sysfs on Linux
 func detectAMD() ([]GPUInfo, error) {
 	matches, err := filepath.Glob("/sys/class/drm/card*/device/mem_info_vram_total")
@@ -203,36 +150,5 @@ func detectOS() OSInfo {
 		Platform: "linux",
 		Arch:     runtime.GOARCH,
 		Version:  version,
-	}
-}
-
-// detectNVLink checks if NVLink is present between GPUs via nvidia-smi
-func detectNVLink() bool {
-	cmd := exec.Command("nvidia-smi", "nvlink", "--status")
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(string(output)), "active")
-}
-
-// estimateBandwidth estimates memory bandwidth based on GPU name
-func estimateBandwidth(name string) float64 {
-	name = strings.ToLower(name)
-	switch {
-	case strings.Contains(name, "5090"):
-		return 1792.0
-	case strings.Contains(name, "5080"):
-		return 960.0
-	case strings.Contains(name, "4090"):
-		return 1008.0
-	case strings.Contains(name, "4080"):
-		return 717.0
-	case strings.Contains(name, "3090"):
-		return 936.0
-	case strings.Contains(name, "3080"):
-		return 760.0
-	default:
-		return 0.0
 	}
 }
