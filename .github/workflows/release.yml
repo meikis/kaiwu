@@ -9,18 +9,19 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # ============================================================
+  # Build kaiwu CLI (Go binary)
+  # ============================================================
+  build-kaiwu:
     strategy:
       matrix:
         include:
           - os: ubuntu-22.04
             goos: linux
             goarch: amd64
-            asset: kaiwu-linux-amd64
           - os: windows-2022
             goos: windows
             goarch: amd64
-            asset: kaiwu-windows-amd64
 
     runs-on: ${{ matrix.os }}
 
@@ -31,37 +32,157 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Build
+      - name: Build kaiwu
         env:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o ${{ matrix.asset }}${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/kaiwu/
+          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o kaiwu${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/kaiwu/
 
-      - name: Package (Linux)
-        if: matrix.goos == 'linux'
-        run: |
-          tar -czf ${{ matrix.asset }}.tar.gz ${{ matrix.asset }}
-
-      - name: Package (Windows)
-        if: matrix.goos == 'windows'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "${{ matrix.asset }}.exe" -DestinationPath "${{ matrix.asset }}.zip"
-
-      - name: Upload artifact
+      - name: Upload kaiwu binary
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: |
-            ${{ matrix.asset }}.tar.gz
-            ${{ matrix.asset }}.zip
-            ${{ matrix.asset }}
-            ${{ matrix.asset }}.exe
+          name: kaiwu-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: kaiwu${{ matrix.goos == 'windows' && '.exe' || '' }}
 
+  # ============================================================
+  # Build llama-server with CUDA (Windows)
+  # ============================================================
+  build-llama-server-windows:
+    runs-on: windows-2022
+
+    steps:
+      - name: Install CUDA Toolkit 12.4
+        uses: Jimver/cuda-toolkit@v0.2.16
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja -y --no-progress
+
+      - name: Download TurboQuant source
+        shell: pwsh
+        run: |
+          curl.exe -L -o turboquant.zip "https://codeload.github.com/johndpope/llama-cpp-turboquant/zip/refs/heads/feature/planarquant-kv-cache"
+          Expand-Archive turboquant.zip -DestinationPath .
+          Rename-Item llama-cpp-turboquant-feature-planarquant-kv-cache llama-cpp-turboquant
+
+      - name: Fix MSVC build bugs
+        shell: pwsh
+        run: |
+          $ops = "llama-cpp-turboquant\ggml\src\ggml-cpu\ops.cpp"
+          $content = Get-Content $ops -Raw
+          $content = $content -replace 'extern "C" GGML_API int turbo3_cpu_wht_group_size;', 'int turbo3_cpu_wht_group_size = 1;'
+          $content | Set-Content $ops
+
+          $tq = "llama-cpp-turboquant\ggml\src\ggml-cuda\ggml-turbo-quant.c"
+          if (Test-Path $tq) {
+            $content = Get-Content $tq -Raw
+            if ($content -notmatch '_USE_MATH_DEFINES') {
+              "#define _USE_MATH_DEFINES`n#include <math.h>`n" + $content | Set-Content $tq
+            }
+          }
+
+          $kvcache = "llama-cpp-turboquant\src\llama-kv-cache.cpp"
+          if (Test-Path $kvcache) {
+            $content = Get-Content $kvcache -Raw
+            if ($content -notmatch 'g_innerq_scale_inv_host') {
+              "/* MSVC linker fix */`nfloat * g_innerq_scale_inv_host = nullptr;`n" + $content | Set-Content $kvcache
+            }
+          }
+
+      - name: Build llama-server
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cd llama-cpp-turboquant
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DLLAMA_BUILD_SERVER=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CUDA=ON ^
+            -DGGML_CUDA_F16=ON ^
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"
+          cmake --build build --config Release -t llama-server
+
+      - name: Collect llama-server artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path llama-artifact
+          Copy-Item llama-cpp-turboquant\build\bin\Release\llama-server.exe llama-artifact\llama-server-cuda.exe
+          Get-ChildItem llama-cpp-turboquant\build\bin\Release\*.dll | Copy-Item -Destination llama-artifact\
+          $cudaBin = "$env:CUDA_PATH\bin"
+          @("cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll") | ForEach-Object {
+            $src = Join-Path $cudaBin $_
+            if (Test-Path $src) { Copy-Item $src llama-artifact\ }
+          }
+
+      - name: Upload llama-server artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-windows
+          path: llama-artifact/
+
+  # ============================================================
+  # Build llama-server with CUDA (Linux)
+  # ============================================================
+  build-llama-server-linux:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install CUDA Toolkit 12.4
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y cuda-toolkit-12-4 gcc-12 g++-12
+          echo "/usr/local/cuda-12.4/bin" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-12.4/lib64" >> $GITHUB_ENV
+
+      - name: Download TurboQuant source
+        run: |
+          curl -L -o turboquant.zip "https://codeload.github.com/johndpope/llama-cpp-turboquant/zip/refs/heads/feature/planarquant-kv-cache"
+          unzip -q turboquant.zip
+          mv llama-cpp-turboquant-feature-planarquant-kv-cache llama-cpp-turboquant
+
+      - name: Fix extern C build bug
+        run: |
+          sed -i 's/^extern "C" GGML_API int turbo3_cpu_wht_group_size;/extern "C" int turbo3_cpu_wht_group_size;/' \
+            llama-cpp-turboquant/ggml/src/ggml-cpu/ops.cpp
+
+      - name: Build llama-server
+        run: |
+          cd llama-cpp-turboquant
+          cmake -B build \
+            -DGGML_CUDA=ON \
+            -DGGML_CUDA_F16=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12
+          cmake --build build --config Release -j$(nproc) --target llama-server
+
+      - name: Collect llama-server artifacts
+        run: |
+          mkdir -p llama-artifact
+          cp llama-cpp-turboquant/build/bin/llama-server llama-artifact/llama-server-cuda
+          cp llama-cpp-turboquant/build/bin/lib*.so llama-artifact/ 2>/dev/null || true
+          chmod +x llama-artifact/llama-server-cuda
+
+      - name: Upload llama-server artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-linux
+          path: llama-artifact/
+
+  # ============================================================
+  # Package everything and create GitHub Release
+  # ============================================================
   release:
-    needs: build
+    needs: [build-kaiwu, build-llama-server-windows, build-llama-server-linux]
     runs-on: ubuntu-22.04
 
     steps:
@@ -70,12 +191,25 @@ jobs:
         with:
           path: artifacts
 
+      - name: Package Windows release
+        run: |
+          mkdir -p package-win
+          cp artifacts/kaiwu-windows-amd64/kaiwu.exe package-win/
+          cp artifacts/llama-server-windows/* package-win/
+          cd package-win && zip -r ../kaiwu-windows-amd64.zip . && cd ..
+
+      - name: Package Linux release
+        run: |
+          mkdir -p package-linux
+          cp artifacts/kaiwu-linux-amd64/kaiwu package-linux/
+          cp artifacts/llama-server-linux/* package-linux/
+          chmod +x package-linux/kaiwu package-linux/llama-server-cuda
+          cd package-linux && tar -czf ../kaiwu-linux-amd64.tar.gz . && cd ..
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            artifacts/**/*.tar.gz
-            artifacts/**/*.zip
-            artifacts/**/kaiwu
-            artifacts/**/kaiwu.exe
+            kaiwu-windows-amd64.zip
+            kaiwu-linux-amd64.tar.gz
