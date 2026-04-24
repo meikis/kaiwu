@@ -30,7 +30,8 @@ func selectBinary(hw *hardware.HardwareProbe) string {
 		return "llama-server" + ext
 	}
 
-	if strings.Contains(strings.ToLower(gpu.Name), "nvidia") {
+	// GPU detected via nvidia-smi → CUDA; otherwise Vulkan
+	if gpu.ComputeCap != "" {
 		return "llama-server-cuda" + ext
 	}
 
@@ -42,8 +43,10 @@ func downloadURL(hw *hardware.HardwareProbe) string {
 	base := fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s", releaseTag)
 	gpu := hw.PrimaryGPU()
 
+	isNVIDIA := gpu != nil && gpu.ComputeCap != ""
+
 	if runtime.GOOS == "windows" {
-		if gpu != nil && strings.Contains(strings.ToLower(gpu.Name), "nvidia") {
+		if isNVIDIA {
 			return fmt.Sprintf("%s/llama-%s-bin-win-cuda-12.4-x64.zip", base, releaseTag)
 		}
 		if gpu != nil {
@@ -53,7 +56,7 @@ func downloadURL(hw *hardware.HardwareProbe) string {
 	}
 
 	// Linux
-	if gpu != nil && strings.Contains(strings.ToLower(gpu.Name), "nvidia") {
+	if isNVIDIA {
 		return fmt.Sprintf("%s/llama-%s-bin-ubuntu-x64.tar.gz", base, releaseTag)
 	}
 	if gpu != nil {

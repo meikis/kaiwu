@@ -288,7 +288,6 @@ func buildArgs(profile *model.DeployProfile, modelPath string, port int, hw *har
 		"--host", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--n-gpu-layers", "999",
-		"--flash-attn", "on",
 		"--parallel", "1",
 		"--cont-batching",
 		"--metrics",
@@ -300,6 +299,11 @@ func buildArgs(profile *model.DeployProfile, modelPath string, port int, hw *har
 		"--threads", strconv.Itoa(threads),
 		"--kv-unified",
 		"--fit", "on",
+	}
+
+	// Flash Attention: SM80+ only
+	if hw.SupportsFlashAttn() {
+		args = append(args, "--flash-attn", "on")
 	}
 
 	// mlock

@@ -3,6 +3,8 @@ package hardware
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // HardwareProbe contains detected hardware information
@@ -112,6 +114,24 @@ func (p *HardwareProbe) TotalVRAM_MB() int {
 // GPUCount returns the number of GPUs
 func (p *HardwareProbe) GPUCount() int {
 	return len(p.GPUs)
+}
+
+// SupportsFlashAttn returns true if the primary GPU supports Flash Attention (SM80+)
+func (p *HardwareProbe) SupportsFlashAttn() bool {
+	gpu := p.PrimaryGPU()
+	if gpu == nil || gpu.ComputeCap == "" {
+		return false
+	}
+	// Parse major version from "8.9" → 8
+	parts := strings.SplitN(gpu.ComputeCap, ".", 2)
+	if len(parts) == 0 {
+		return false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	return major >= 8 // Ampere (SM80) and newer
 }
 
 // Fingerprint returns a unique hardware fingerprint for profile caching

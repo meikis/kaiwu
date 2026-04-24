@@ -358,7 +358,6 @@ func BuildArgs(profile *model.DeployProfile, modelPath string, port int, hw *har
 		"--host", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--n-gpu-layers", "999",
-		"--flash-attn", "on",
 		"--parallel", parallel,
 		"--cont-batching",
 		"--metrics",
@@ -372,6 +371,11 @@ func BuildArgs(profile *model.DeployProfile, modelPath string, port int, hw *har
 		"--ubatch-size", strconv.Itoa(ubatchSize),
 		"--kv-unified",
 		"--fit", "on",
+	}
+
+	// Flash Attention: SM80+ only (Ampere and newer)
+	if hw.SupportsFlashAttn() {
+		args = append(args, "--flash-attn", "on")
 	}
 
 	// mlock: lock model in RAM when headroom is sufficient
