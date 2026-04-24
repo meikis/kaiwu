@@ -31,7 +31,7 @@ type RunningEngine struct {
 // 探测式启动：尝试最优 ctx → OOM 就减半重试 → 最多 3 次。
 func Start(profile *model.DeployProfile, binaryPath, modelPath string, hw *hardware.HardwareProbe) (*RunningEngine, error) {
 	// 运行时探测 llama-server 是否支持 iso3
-	if profile.HasIsoQuant && !detectIso3Support(binaryPath) {
+	if profile.HasIsoQuant && !DetectIso3Support(binaryPath) {
 		fmt.Println("      llama-server 不支持 iso3，回退到 q8_0/q4_0")
 		profile.HasIsoQuant = false
 	}
@@ -381,8 +381,8 @@ func shouldMmapEngine(hw *hardware.HardwareProbe, profile *model.DeployProfile) 
 	return modelMB < freeMB*0.7
 }
 
-// detectIso3Support 检测 llama-server 是否支持 iso3
-func detectIso3Support(binaryPath string) bool {
+// DetectIso3Support 检测 llama-server 是否支持 iso3 (exported for use in warmup)
+func DetectIso3Support(binaryPath string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, binaryPath, "--help").CombinedOutput()

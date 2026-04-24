@@ -401,6 +401,11 @@ func runModel(modelName string, fast, bench bool, ctxSize int, reset bool, llama
 
 	// [4/6] OOM preflight check
 	fmt.Printf("\n[4/6] Preflight check...\n")
+	// iso3 检测必须在 warmup 之前，否则 warmup 会用 iso3 参数启动失败
+	if profile.HasIsoQuant && !engine.DetectIso3Support(binaryPath) {
+		fmt.Printf("      llama-server 不支持 iso3，回退到 q8_0/q4_0\n")
+		profile.HasIsoQuant = false
+	}
 	if err := engine.PreflightCheck(profile, hw); err != nil {
 		return err
 	}
