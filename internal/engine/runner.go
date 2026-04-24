@@ -63,10 +63,9 @@ func Start(profile *model.DeployProfile, binaryPath, modelPath string, hw *hardw
 			ctxSize = 4096
 		}
 
-		// 已经是最小了还失败
+		// 已经是最小了还失败 → 给出详细的 VRAM 分析
 		if ctxSize == 4096 && attempt > 0 {
-			return nil, fmt.Errorf("连续 %d 次启动失败，即使最小上下文(4K)也无法运行\n"+
-				"  建议：选择更小的量化或使用 MoE offload 模型", attempt+1)
+			return nil, buildOOMError(profile, hw, attempt+1)
 		}
 	}
 
@@ -375,11 +374,45 @@ func shouldMmapEngine(hw *hardware.HardwareProbe, profile *model.DeployProfile) 
 
 // detectIso3Support 检测 llama-server 是否支持 iso3
 func detectIso3Support(binaryPath string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, binaryPath, "--help").CombinedOutput()
-	if err != nil {
+	// --help 可能返回非零退出码，只要有输出就检查内容
+	if len(out) == 0 && err != nil {
 		return false
 	}
 	return strings.Contains(string(out), "iso3")
+}
+
+// buildOOMError 构建详细的 OOM 错误信息
+func buildOOMError(profile *model.DeployProfile, hw *hardware.HardwareProbe, attempts int) error {
+	vramMB := hw.TotalVRAM_MB()
+	modelMB := int(profile.Size_GB * 1024)
+	kvMB := profile.EstimateKVCacheMB(4096, "q4_0") * 2 // 最小 KV cache
+	needMB := modelMB + kvMB + 1024                      // 模型 + KV + overhead
+
+	gpu := hw.PrimaryGPU()
+	gpuName := "GPU"
+	if gpu != nil {
+		gpuName = gpu.Name
+	}
+
+	msg := fmt.Sprintf("连续 %d 次启动失败，即使最小上下文(4K)也无法运行\n\n", attempts)
+	msg += fmt.Sprintf("  %s: %d MB VRAM\n", gpuName, vramMB)
+	msg += fmt.Sprintf("  模型 %s: ~%d MB\n", profile.DisplayName, modelMB)
+	msg += fmt.Sprintf("  KV cache (4K, q4_0): ~%d MB\n", kvMB)
+	msg += fmt.Sprintf("  预估总需: ~%d MB\n\n", needMB)
+
+	if needMB > vramMB {
+		msg += fmt.Sprintf("  差额: %d MB\n\n", needMB-vramMB)
+	}
+
+	msg += "  建议:\n"
+	msg += "  1. 选择更小的量化 (Q2_K)\n"
+	msg += "  2. 选择更小的模型\n"
+	if profile.Mode != "moe_offload" {
+		msg += "  3. 使用 MoE offload 模型（experts 放 CPU RAM）"
+	}
+
+	return fmt.Errorf("%s", msg)
 }

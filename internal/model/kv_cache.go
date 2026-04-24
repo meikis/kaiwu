@@ -33,7 +33,7 @@ func bytesPerKVType(kvType string) float64 {
 }
 
 // SelectKVCacheType chooses the fastest KV cache type that fits in available VRAM.
-// Strategy: try f16 first (fastest), fall back to q8_0+q4_0 if tight, then iso3.
+// Strategy: try f16 first (fastest), fall back to q8_0+q4_0 if tight, then iso3, then q4_0+q4_0.
 func (p *DeployProfile) SelectKVCacheType(vramMB int, ctxSize int) (k, v string) {
 	modelVRAM_MB := int(p.Size_GB * 1024)
 	reserveMB := 1024 // 1GB for activations, overhead, etc.
@@ -59,6 +59,12 @@ func (p *DeployProfile) SelectKVCacheType(vramMB int, ctxSize int) (k, v string)
 		}
 	}
 
-	// Last resort: q8_0+q4_0 anyway, let OOM handler deal with it
-	return "q8_0", "q4_0"
+	// iso3 不可用或仍不够 → q4_0+q4_0（最小标准量化）
+	kvQ4_MB := p.EstimateKVCacheMB(ctxSize, "q4_0") * 2
+	if freeAfterModel >= kvQ4_MB {
+		return "q4_0", "q4_0"
+	}
+
+	// Last resort: q4_0+q4_0 anyway, let OOM handler deal with it
+	return "q4_0", "q4_0"
 }
