@@ -104,21 +104,35 @@ func EnsureBinary(hw *hardware.HardwareProbe) (string, error) {
 	return binaryPath, nil
 }
 
-// findBundledBinary looks for an iso3-capable llama-server shipped alongside kaiwu.
-// Searches: same directory as kaiwu executable, then ./bin/ relative to it.
+// findBundledBinary looks for a bundled llama-server shipped alongside kaiwu.
+// Searches: same directory as kaiwu executable (resolving symlinks), ~/.kaiwu/bin/, then ./bin/.
 func findBundledBinary(binaryName string) string {
 	exe, err := os.Executable()
 	if err != nil {
 		return ""
 	}
+
+	// Resolve symlinks (install.sh creates symlink in /usr/local/bin → ~/.kaiwu/bin/)
+	realExe, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		realExe = exe
+	}
+	realDir := filepath.Dir(realExe)
 	exeDir := filepath.Dir(exe)
 
 	candidates := []string{
+		filepath.Join(realDir, binaryName),
+		filepath.Join(config.BinDir(), binaryName),
 		filepath.Join(exeDir, binaryName),
 		filepath.Join(exeDir, "bin", binaryName),
 	}
 
+	seen := make(map[string]bool)
 	for _, path := range candidates {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
 		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > 1024*1024 {
 			return path
 		}

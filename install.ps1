@@ -62,14 +62,18 @@ if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 }
 
-# Find and move binary
+# Find and move all files (kaiwu.exe + llama-server-cuda.exe + DLLs)
 $ExePath = Get-ChildItem -Path $TmpDir -Filter $BinName -Recurse | Select-Object -First 1
 if (-not $ExePath) {
     Write-Host "Error: $BinName not found in download." -ForegroundColor Red
     Remove-Item -Recurse -Force $TmpDir
     exit 1
 }
-Copy-Item -Path $ExePath.FullName -Destination (Join-Path $InstallDir $BinName) -Force
+# Copy all files from the same directory as kaiwu.exe
+$SrcDir = $ExePath.DirectoryName
+Get-ChildItem -Path $SrcDir -File | ForEach-Object {
+    Copy-Item -Path $_.FullName -Destination (Join-Path $InstallDir $_.Name) -Force
+}
 
 # Clean up
 Remove-Item -Recurse -Force $TmpDir

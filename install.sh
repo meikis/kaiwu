@@ -65,14 +65,22 @@ main() {
         tar -xzf "${TMPDIR}/kaiwu.tar.gz" -C "$TMPDIR"
     fi
 
-    # Install
+    # Install kaiwu + bundled llama-server + CUDA libs
+    KAIWU_DIR="${HOME}/.kaiwu/bin"
+    mkdir -p "$KAIWU_DIR"
+
+    # Move all extracted files to ~/.kaiwu/bin/
+    for f in "${TMPDIR}"/*; do
+        [ -f "$f" ] && cp "$f" "$KAIWU_DIR/"
+    done
+    chmod +x "$KAIWU_DIR"/*
+
+    # Symlink kaiwu to PATH
     if [ -w "$INSTALL_DIR" ]; then
-        mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-        chmod +x "${INSTALL_DIR}/${BINARY}"
+        ln -sf "$KAIWU_DIR/${BINARY}" "${INSTALL_DIR}/${BINARY}"
     else
         echo "Need sudo to install to ${INSTALL_DIR}"
-        sudo mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-        sudo chmod +x "${INSTALL_DIR}/${BINARY}"
+        sudo ln -sf "$KAIWU_DIR/${BINARY}" "${INSTALL_DIR}/${BINARY}"
     fi
 
     rm -rf "$TMPDIR"
