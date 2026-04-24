@@ -206,6 +206,16 @@ func detectOS() OSInfo {
 	}
 }
 
+// detectNVLink checks if NVLink is present between GPUs via nvidia-smi
+func detectNVLink() bool {
+	cmd := exec.Command("nvidia-smi", "nvlink", "--status")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(output)), "active")
+}
+
 // estimateBandwidth estimates memory bandwidth based on GPU name
 func estimateBandwidth(name string) float64 {
 	name = strings.ToLower(name)

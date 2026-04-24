@@ -116,13 +116,14 @@ func (p *HardwareProbe) GPUCount() int {
 	return len(p.GPUs)
 }
 
-// SupportsFlashAttn returns true if the primary GPU supports Flash Attention (SM80+)
+// SupportsFlashAttn returns true if the primary GPU supports Flash Attention (SM75+).
+// Turing (SM75, e.g. RTX 2080) supports FA with modest gains; Ampere+ gets full benefit.
 func (p *HardwareProbe) SupportsFlashAttn() bool {
 	gpu := p.PrimaryGPU()
 	if gpu == nil || gpu.ComputeCap == "" {
 		return false
 	}
-	// Parse major version from "8.9" → 8
+	// Parse "8.9" → major=8, minor=9
 	parts := strings.SplitN(gpu.ComputeCap, ".", 2)
 	if len(parts) == 0 {
 		return false
@@ -131,7 +132,21 @@ func (p *HardwareProbe) SupportsFlashAttn() bool {
 	if err != nil {
 		return false
 	}
-	return major >= 8 // Ampere (SM80) and newer
+	minor := 0
+	if len(parts) == 2 {
+		minor, _ = strconv.Atoi(parts[1])
+	}
+	sm := major*10 + minor
+	return sm >= 75 // Turing (SM75) and newer
+}
+
+// HasNVLink returns true if NVLink is detected between GPUs.
+// Only meaningful when GPUCount() > 1.
+func (p *HardwareProbe) HasNVLink() bool {
+	if len(p.GPUs) < 2 {
+		return false
+	}
+	return detectNVLink()
 }
 
 // Fingerprint returns a unique hardware fingerprint for profile caching

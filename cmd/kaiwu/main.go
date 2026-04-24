@@ -341,10 +341,18 @@ func runModel(modelName string, fast, bench bool, ctxSize int, reset bool) error
 		fmt.Printf(" (experts on CPU)")
 	}
 	fmt.Printf("\n")
+	accel := []string{}
+	if hw.SupportsFlashAttn() {
+		accel = append(accel, "Flash Attention")
+	}
 	if profile.NativeMTP {
-		fmt.Printf("      Accel:  Flash Attention + MTP (native)\n")
-	} else {
-		fmt.Printf("      Accel:  Flash Attention\n")
+		accel = append(accel, "MTP (native)")
+	}
+	if hw.GPUCount() > 1 && hw.HasNVLink() {
+		accel = append(accel, "NVLink")
+	}
+	if len(accel) > 0 {
+		fmt.Printf("      Accel:  %s\n", strings.Join(accel, " + "))
 	}
 
 	// [3/5] Check files
@@ -353,6 +361,7 @@ func runModel(modelName string, fast, bench bool, ctxSize int, reset bool) error
 	if err != nil {
 		return fmt.Errorf("failed to ensure binary: %w", err)
 	}
+	engine.VerifyBackend(binaryPath, hw)
 	fmt.Printf("      Binary: %s [cached]\n", filepath.Base(binaryPath))
 
 	modelPath, err := model.EnsureFile(profile)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -105,6 +106,29 @@ func EnsureBinary(hw *hardware.HardwareProbe) (string, error) {
 	}
 
 	return binaryPath, nil
+}
+
+// VerifyBackend checks that the binary actually supports the expected backend.
+// Runs llama-server --version and checks output for "CUDA" when NVIDIA GPU is present.
+func VerifyBackend(binaryPath string, hw *hardware.HardwareProbe) {
+	gpu := hw.PrimaryGPU()
+	if gpu == nil {
+		return
+	}
+
+	isNVIDIA := gpu.ComputeCap != ""
+	out, err := exec.Command(binaryPath, "--version").CombinedOutput()
+	if err != nil {
+		return // can't verify, proceed anyway
+	}
+
+	output := strings.ToLower(string(out))
+	hasCUDA := strings.Contains(output, "cuda")
+
+	if isNVIDIA && !hasCUDA {
+		fmt.Println("      Warning: NVIDIA GPU detected but binary lacks CUDA support")
+		fmt.Println("      Performance may be degraded. Consider re-downloading with: kaiwu update")
+	}
 }
 
 // findBundledBinary looks for a bundled llama-server shipped alongside kaiwu.

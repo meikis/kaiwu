@@ -301,9 +301,14 @@ func buildArgs(profile *model.DeployProfile, modelPath string, port int, hw *har
 		"--fit", "on",
 	}
 
-	// Flash Attention: SM80+ only
+	// Flash Attention: SM75+ (Turing and newer)
 	if hw.SupportsFlashAttn() {
 		args = append(args, "--flash-attn", "on")
+	}
+
+	// Multi-GPU with NVLink: enable direct GPU-to-GPU memory access
+	if hw.GPUCount() > 1 && hw.HasNVLink() {
+		args = append(args, "-sm", "graph")
 	}
 
 	// mlock
