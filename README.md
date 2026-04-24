@@ -80,24 +80,19 @@ On subsequent runs, you see:
 
 ## Installation
 
-**Download from [Releases](https://github.com/val1813/kaiwu/releases):**
+One command, no dependencies:
 
-```bash
-# Windows — add kaiwu.exe to PATH, then:
-kaiwu version
-
-# Linux
-chmod +x kaiwu && sudo mv kaiwu /usr/local/bin/
-kaiwu version
+**Windows** (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/val1813/kaiwu/main/install.ps1 | iex
 ```
 
-**Build from source** (requires Go 1.22+):
-
+**Linux / macOS**:
 ```bash
-git clone https://github.com/val1813/kaiwu.git
-cd kaiwu
-make build-windows   # or build-linux
+curl -fsSL https://raw.githubusercontent.com/val1813/kaiwu/main/install.sh | sh
 ```
+
+Or download manually from [Releases](https://github.com/val1813/kaiwu/releases).
 
 ## Quick Start
 
@@ -244,24 +239,19 @@ kaiwu run Qwen3-30B-A3B
 
 ## 安装
 
-**从 [Releases](https://github.com/val1813/kaiwu/releases) 下载：**
+一行命令，无需任何依赖：
 
-```bash
-# Windows — 把 kaiwu.exe 加入 PATH，然后：
-kaiwu version
-
-# Linux
-chmod +x kaiwu && sudo mv kaiwu /usr/local/bin/
-kaiwu version
+**Windows** (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/val1813/kaiwu/main/install.ps1 | iex
 ```
 
-**从源码编译**（需要 Go 1.22+）：
-
+**Linux / macOS**:
 ```bash
-git clone https://github.com/val1813/kaiwu.git
-cd kaiwu
-make build-windows   # 或 build-linux
+curl -fsSL https://raw.githubusercontent.com/val1813/kaiwu/main/install.sh | sh
 ```
+
+也可以从 [Releases](https://github.com/val1813/kaiwu/releases) 手动下载。
 
 ## 快速开始
 
@@ -337,6 +327,18 @@ kaiwu inject
 | `probe` | 显示检测到的硬件信息 |
 | `inject` | 自动配置 Continue/Cursor 接入 Kaiwu |
 | `version` | 显示版本号 |
+
+---
+
+## For Developers / 贡献者
+
+Build from source (requires Go 1.22+):
+
+```bash
+git clone https://github.com/val1813/kaiwu.git
+cd kaiwu
+make build-windows   # or build-linux
+```
 
 ---
 
