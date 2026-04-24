@@ -46,6 +46,7 @@ func main() {
 		newBenchCmd(),
 		newListCmd(),
 		newConfigCmd(),
+		newCacheCmd(),
 		newVersionCmd(),
 	)
 
@@ -69,12 +70,13 @@ func newRunCmd() *cobra.Command {
 	var bench bool
 	var ctxSize int
 	var reset bool
+	var llamaServer string
 	cmd := &cobra.Command{
 		Use:   "run <model>",
 		Short: "Deploy and start a model",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runModel(args[0], fast, bench, ctxSize, reset)
+			return runModel(args[0], fast, bench, ctxSize, reset, llamaServer)
 		},
 	}
 	cmd.Flags().BoolVar(&fast, "fast", false, "Skip warmup, use cached profile")
@@ -85,6 +87,7 @@ func newRunCmd() *cobra.Command {
 	// 越大上下文越长但越慢，越小速度越快但上下文短
 	// 0 = 自动模式（根据 VRAM 和模型大小动态计算最优值）
 	cmd.Flags().IntVar(&ctxSize, "ctx-size", 0, "手动指定上下文大小（0=自动）")
+	cmd.Flags().StringVar(&llamaServer, "llama-server", "", "使用自定义 llama-server 二进制（完整路径）")
 	return cmd
 }
 
@@ -153,6 +156,22 @@ func newListCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&installed, "installed", false, "Only show downloaded models")
+	return cmd
+}
+
+func newCacheCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cache",
+		Short: "Manage warmup cache",
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "clear [model]",
+		Short: "清除 warmup 缓存（不指定模型则清除全部）",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return clearCache(args)
+		},
+	})
 	return cmd
 }
 
@@ -284,7 +303,7 @@ func showMainMenu() {
 	fmt.Println()
 }
 
-func runModel(modelName string, fast, bench bool, ctxSize int, reset bool) error {
+func runModel(modelName string, fast, bench bool, ctxSize int, reset bool, llamaServer string) error {
 	printLogo()
 	fmt.Println()
 
@@ -357,12 +376,22 @@ func runModel(modelName string, fast, bench bool, ctxSize int, reset bool) error
 
 	// [3/5] Check files
 	fmt.Printf("\n[3/6] Checking files...\n")
-	binaryPath, err := engine.EnsureBinary(hw)
-	if err != nil {
-		return fmt.Errorf("failed to ensure binary: %w", err)
+	var binaryPath string
+	if llamaServer != "" {
+		if _, err := os.Stat(llamaServer); err != nil {
+			return fmt.Errorf("指定的 llama-server 不存在: %s", llamaServer)
+		}
+		binaryPath = llamaServer
+		fmt.Printf("      Binary: %s [user-specified]\n", filepath.Base(binaryPath))
+	} else {
+		var err error
+		binaryPath, err = engine.EnsureBinary(hw)
+		if err != nil {
+			return fmt.Errorf("failed to ensure binary: %w", err)
+		}
+		fmt.Printf("      Binary: %s [cached]\n", filepath.Base(binaryPath))
 	}
 	engine.VerifyBackend(binaryPath, hw)
-	fmt.Printf("      Binary: %s [cached]\n", filepath.Base(binaryPath))
 
 	modelPath, err := model.EnsureFile(profile)
 	if err != nil {
@@ -675,6 +704,59 @@ func listModels(installed bool) error {
 	dim.Println("  → 更多模型推荐和讨论：llmbbs.ai")
 	fmt.Println()
 
+	return nil
+}
+
+func clearCache(args []string) error {
+	profileDir := config.ProfileDir()
+
+	if len(args) == 0 {
+		// 清除全部缓存
+		entries, err := os.ReadDir(profileDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				fmt.Println("没有缓存可清除")
+				return nil
+			}
+			return err
+		}
+		count := 0
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".json") {
+				os.Remove(filepath.Join(profileDir, e.Name()))
+				count++
+			}
+		}
+		if count == 0 {
+			fmt.Println("没有缓存可清除")
+		} else {
+			color.Green("✓ 已清除 %d 个模型缓存\n", count)
+		}
+		return nil
+	}
+
+	// 清除指定模型的缓存
+	modelName := strings.ToLower(args[0])
+	entries, err := os.ReadDir(profileDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("没有缓存可清除")
+			return nil
+		}
+		return err
+	}
+	count := 0
+	for _, e := range entries {
+		if strings.Contains(strings.ToLower(e.Name()), modelName) {
+			os.Remove(filepath.Join(profileDir, e.Name()))
+			count++
+		}
+	}
+	if count == 0 {
+		fmt.Printf("未找到模型 '%s' 的缓存\n", args[0])
+	} else {
+		color.Green("✓ 已清除 %d 个缓存文件\n", count)
+	}
 	return nil
 }
 
