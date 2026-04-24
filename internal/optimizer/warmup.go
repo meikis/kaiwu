@@ -18,6 +18,15 @@ import (
 	"github.com/val1813/kaiwu/internal/model"
 )
 
+// minAcceptableTPS is the minimum decode speed for acceptable user experience.
+// Below 18 tok/s users perceive noticeable waiting; 20-40 is comfortable.
+// Use 18 instead of 20 to absorb single-measurement variance (~10%).
+const minAcceptableTPS = 18.0
+
+// maxUpwardProbes limits how many times we double ctx after the first success.
+// Prevents 8K→16K→32K→64K→128K→256K chains on large VRAM (each costs 30-60s).
+const maxUpwardProbes = 3
+
 // OptimizedProfile is the result of warmup benchmark
 type OptimizedProfile struct {
 	ModelID     string   `json:"model_id"`
@@ -30,18 +39,69 @@ type OptimizedProfile struct {
 	CreatedAt   string   `json:"created_at"`
 }
 
-// Warmup runs the warmup benchmark and returns optimized parameters
+// ClearProfileCache deletes the cached profile for a given model+hardware combo.
+func ClearProfileCache(modelID string, hw *hardware.HardwareProbe) error {
+	fingerprint := hw.Fingerprint()
+	profilePath := filepath.Join(config.ProfileDir(), fmt.Sprintf("%s_%s.json", modelID, fingerprint))
+	if err := os.Remove(profilePath); err != nil {
+		if os.IsNotExist(err) {
+			return nil // nothing to clear
+		}
+		return err
+	}
+	return nil
+}
+
+// Warmup runs the warmup benchmark and returns optimized parameters.
+//
+// ┌─────────────────────────────────────────────────────────────────┐
+// │ Warmup Flow                                                     │
+// │                                                                 │
+// │ 1. Cache check                                                  │
+// │    - CtxOverride > 0 → skip cache                               │
+// │    - Valid cache → return immediately (2s startup)               │
+// │    - --fast + no cache → error                                  │
+// │                                                                 │
+// │ 2. Phase 1: Coarse search (power-of-2 steps, max 8 probes)     │
+// │    Start from IdealStartCtx×2 (full_gpu) or nativeMax (MoE)    │
+// │    a) OOM       → record failedCtx, halve, retry                │
+// │    b) Too slow  → record failedCtx, halve, retry                │
+// │    c) Success   → record bestCtx, double up (max 3 times)       │
+// │    d) Double fails → stop, we have [bestCtx, failedCtx] range   │
+// │                                                                 │
+// │ 3. Phase 1.5: Fine search (4K precision binary search)          │
+// │    Between bestCtx and failedCtx, binary search for real max    │
+// │    Only runs when failedCtx > bestCtx (gap to explore)          │
+// │                                                                 │
+// │ 4. Phase 2: ubatch tuning                                       │
+// │    Test 128 vs 512, pick faster. Uses bestCtx from above.       │
+// │                                                                 │
+// │ 5. Save profile to cache                                        │
+// └─────────────────────────────────────────────────────────────────┘
 func Warmup(profile *model.DeployProfile, binaryPath, modelPath string, hw *hardware.HardwareProbe, fast bool) (*OptimizedProfile, error) {
 	fingerprint := hw.Fingerprint()
 	profilePath := filepath.Join(config.ProfileDir(), fmt.Sprintf("%s_%s.json", profile.ModelID, fingerprint))
 
-	// Always check cache first (spec: second launch should be 2s)
-	if cached, err := loadCachedProfile(profilePath); err == nil {
-		if isCacheValid(cached, fingerprint) {
-			fmt.Printf("      Using cached profile (%.1f tok/s)\n", cached.MeasuredTPS)
-			return cached, nil
+	// User specified --ctx-size → skip cache, use their value directly
+	if profile.CtxOverride > 0 {
+		fmt.Printf("      用户指定 ctx=%d，跳过缓存\n", profile.CtxOverride)
+	} else {
+		// Check cache (spec: second launch should be 2s)
+		if cached, err := loadCachedProfile(profilePath); err == nil {
+			if isCacheValid(cached, fingerprint) {
+				created, _ := time.Parse(time.RFC3339, cached.CreatedAt)
+				age := time.Since(created)
+				ageStr := fmt.Sprintf("%.0f 天前", age.Hours()/24)
+				if age.Hours() < 24 {
+					ageStr = fmt.Sprintf("%.0f 小时前", age.Hours())
+				}
+				// Extract ctx from cached args for display
+				cachedCtx := extractArgValue(cached.LaunchArgs, "--ctx-size")
+				fmt.Printf("      使用上次配置（%s ctx · %.1f tok/s · %s）\n", cachedCtx, cached.MeasuredTPS, ageStr)
+				return cached, nil
+			}
+			fmt.Printf("      Cache expired, re-running warmup\n")
 		}
-		fmt.Printf("      Cache expired, re-running warmup\n")
 	}
 
 	// --fast with no cache: skip warmup entirely
@@ -51,93 +111,201 @@ func Warmup(profile *model.DeployProfile, binaryPath, modelPath string, hw *hard
 	}
 
 	cfg, _ := config.Load()
-	port := cfg.LlamaPort + 10 // Use offset port to avoid conflicts
+	port := cfg.LlamaPort + 10
 
-	// Round 1: Start with recommended params
-	fmt.Printf("      Round 1: ")
-	args1 := BuildArgs(profile, modelPath, port, hw, 512, 128)
-	tps1, vram1, err := runBenchmarkRound(binaryPath, args1, port)
-	if err != nil {
-		return nil, fmt.Errorf("warmup round 1 failed: %w", err)
-	}
-	fmt.Printf("%.1f tok/s (VRAM: %d MB)\n", tps1, vram1)
-
-	bestTPS := tps1
-	bestArgs := args1
-	bestVRAM := vram1
-
-	// Round 2: Adjust batch size based on VRAM usage
-	gpu := hw.PrimaryGPU()
-	vramTotal := 0
-	if gpu != nil {
-		vramTotal = gpu.VRAM_MB
+	// RAM safety check
+	if warning := checkRAMSafety(hw, profile); warning != "" {
+		fmt.Printf("      %s\n", warning)
 	}
 
-	var batchSize, ubatchSize int
+	// --- Phase 1: probe max ctx (speed-aware) ---
+	nativeMax := profile.NativeCtx
+	if nativeMax <= 0 {
+		nativeMax = 131072
+	}
+
+	batchSize, ubatchSize := 512, 128
 	if profile.Mode == "moe_offload" {
-		batchSize = 4096
-		ubatchSize = 512
-	} else {
-		batchSize = 512
-		ubatchSize = 128
+		batchSize, ubatchSize = 4096, 512
 	}
 
-	if vramTotal > 0 {
-		vramPct := float64(vram1) / float64(vramTotal) * 100
-		if vramPct < 80 {
-			// Room to grow: increase batch size
-			batchSize *= 2
-			ubatchSize *= 2
-		} else if vramPct > 95 {
-			// Too tight: reduce batch size
-			batchSize /= 2
-			ubatchSize /= 2
+	var bestCtx int
+	var bestTPS float64
+	var bestArgs []string
+	var bestVRAM int
+
+	if profile.CtxOverride > 0 {
+		// User override: use exact value, no alignment
+		ctxFixed := profile.CtxOverride
+		// Clamp to model's native max
+		if profile.NativeCtx > 0 && ctxFixed > profile.NativeCtx {
+			fmt.Printf("      Warning: ctx %d 超过模型最大值 %d，已截断\n", ctxFixed, profile.NativeCtx)
+			ctxFixed = profile.NativeCtx
 		}
-	}
-
-	fmt.Printf("      Round 2: ")
-	args2 := BuildArgs(profile, modelPath, port, hw, batchSize, ubatchSize)
-	tps2, vram2, err := runBenchmarkRound(binaryPath, args2, port)
-	if err != nil {
-		fmt.Printf("failed, keeping Round 1 params\n")
-	} else {
-		fmt.Printf("%.1f tok/s", tps2)
-		if tps2 > bestTPS {
-			improvement := (tps2 - bestTPS) / bestTPS * 100
-			fmt.Printf(" (+%.0f%%)\n", improvement)
-			bestTPS = tps2
-			bestArgs = args2
-			bestVRAM = vram2
-		} else {
-			fmt.Printf(" (no improvement)\n")
-		}
-	}
-
-	// Round 3: Fine-tune if Round 2 improved
-	if tps2 > tps1 {
-		fmt.Printf("      Round 3: ")
-		// Try slightly different batch size
-		batchSize3 := batchSize * 3 / 4
-		ubatchSize3 := ubatchSize * 3 / 4
-		args3 := BuildArgs(profile, modelPath, port, hw, batchSize3, ubatchSize3)
-		tps3, vram3, err := runBenchmarkRound(binaryPath, args3, port)
+		fmt.Printf("      User override: ctx=%s ... ", fmtCtx(ctxFixed))
+		args := BuildArgs(profile, modelPath, port, hw, ctxFixed, batchSize, ubatchSize)
+		tps, vram, err := runBenchmarkRound(binaryPath, args, port)
 		if err != nil {
-			fmt.Printf("failed, keeping Round 2 params\n")
+			return nil, fmt.Errorf("user-specified ctx=%s failed to start (OOM?)", fmtCtx(ctxFixed))
+		}
+		fmt.Printf("%.1f tok/s\n", tps)
+		bestCtx = ctxFixed
+		bestTPS = tps
+		bestArgs = args
+		bestVRAM = vram
+	} else {
+		// --- Phase 1: coarse search (power-of-2 steps, max 8 probes) ---
+		// Starting point:
+		//   full_gpu:     IdealStartCtx×2 (oobabooga formula + 1 step headroom)
+		//   moe_offload:  nativeMax (formula wrong for MoE, GPU only has KV cache)
+		var startCtx int
+		if profile.Mode == "moe_offload" {
+			startCtx = nativeMax
 		} else {
-			fmt.Printf("%.1f tok/s", tps3)
-			if tps3 > bestTPS {
-				fmt.Printf(" (improved)\n")
-				bestTPS = tps3
-				bestArgs = args3
-				bestVRAM = vram3
-			} else {
-				fmt.Printf(" (no improvement, keeping Round 2)\n")
-				_ = vram3
+			ideal := engine.IdealStartCtx(profile, hw)
+			startCtx = ideal * 2
+			if startCtx > nativeMax {
+				startCtx = nativeMax
 			}
 		}
-	} else {
-		fmt.Printf("      Round 3: %.1f tok/s (no improvement, keeping Round 1)\n", bestTPS)
+		startCtx = alignToPow2(startCtx)
+
+		var failedCtx int // smallest ctx that failed (OOM or too slow)
+		upwardProbes := 0 // count of upward doublings after first success
+		ctxTry := startCtx
+		for attempt := 1; attempt <= 8; attempt++ {
+			fmt.Printf("      Probe %d: ctx=%s ... ", attempt, fmtCtx(ctxTry))
+			args := BuildArgs(profile, modelPath, port, hw, ctxTry, batchSize, ubatchSize)
+			tps, vram, err := runBenchmarkRound(binaryPath, args, port)
+
+			if err != nil {
+				// OOM: record ceiling, halve and retry downward
+				fmt.Printf("OOM\n")
+				if failedCtx == 0 || ctxTry < failedCtx {
+					failedCtx = ctxTry
+				}
+				ctxTry /= 2
+				if ctxTry < 4096 {
+					ctxTry = 4096
+				}
+				if ctxTry == 4096 && attempt > 1 {
+					break
+				}
+				continue
+			}
+
+			if tps < minAcceptableTPS {
+				// Too slow: record ceiling, keep as fallback, halve
+				fmt.Printf("%.1f tok/s (< %.0f, too slow)\n", tps, minAcceptableTPS)
+				if failedCtx == 0 || ctxTry < failedCtx {
+					failedCtx = ctxTry
+				}
+				if bestCtx == 0 || tps > bestTPS {
+					bestCtx = ctxTry
+					bestTPS = tps
+					bestArgs = args
+					bestVRAM = vram
+				}
+				ctxTry /= 2
+				if ctxTry < 4096 {
+					ctxTry = 4096
+				}
+				if ctxTry == 4096 && attempt > 1 {
+					break
+				}
+				continue
+			}
+
+			// Success: speed >= threshold
+			fmt.Printf("%.1f tok/s\n", tps)
+			bestCtx = ctxTry
+			bestTPS = tps
+			bestArgs = args
+			bestVRAM = vram
+
+			// Try doubling to find the ceiling (max 3 upward probes)
+			if failedCtx == 0 && ctxTry < nativeMax && upwardProbes < maxUpwardProbes {
+				upwardProbes++
+				nextCtx := alignToPow2(ctxTry * 2)
+				if nextCtx > nativeMax {
+					nextCtx = alignToPow2(nativeMax)
+				}
+				if nextCtx > ctxTry {
+					ctxTry = nextCtx
+					continue
+				}
+			}
+			break
+		}
+
+		// --- Phase 1.5: fine search (4K precision binary search) ---
+		// Between bestCtx (works) and failedCtx (too slow/OOM), find the real max.
+		if bestCtx > 0 && failedCtx > bestCtx {
+			lo := bestCtx
+			hi := failedCtx
+			for hi-lo > 4096 {
+				mid := ((lo + hi) / 2 / 1024) * 1024 // align to 1K boundary
+				if mid <= lo || mid >= hi {
+					break
+				}
+				fmt.Printf("      Fine: ctx=%s ... ", fmtCtx(mid))
+				args := BuildArgs(profile, modelPath, port, hw, mid, batchSize, ubatchSize)
+				tps, vram, err := runBenchmarkRound(binaryPath, args, port)
+				if err != nil {
+					fmt.Printf("OOM\n")
+					hi = mid
+					continue
+				}
+				if tps < minAcceptableTPS {
+					fmt.Printf("%.1f tok/s (too slow)\n", tps)
+					hi = mid
+					continue
+				}
+				fmt.Printf("%.1f tok/s\n", tps)
+				lo = mid
+				bestCtx = mid
+				bestTPS = tps
+				bestArgs = args
+				bestVRAM = vram
+			}
+		}
 	}
+
+	if bestCtx == 0 {
+		return nil, fmt.Errorf("all ctx probes failed (tried down to 4K)")
+	}
+
+	// --- Phase 2: ubatch 探测 ---
+	// 实测 128 vs 512，选速度快的。batch 固定 512（和 LM Studio 一致）。
+	// 独立比较：Phase 2 结果总是覆盖 Phase 1（因为 batch size 也可能变了）。
+	ubatchCandidates := []int{128, 512}
+	var ubBestTPS float64
+	var ubBestArgs []string
+	var ubBestVRAM int
+	fmt.Printf("      Tune ubatch: ")
+	for _, ub := range ubatchCandidates {
+		args2 := BuildArgs(profile, modelPath, port, hw, bestCtx, 512, ub)
+		tps2, vram2, err := runBenchmarkRound(binaryPath, args2, port)
+		if err != nil {
+			fmt.Printf("ub=%d failed; ", ub)
+			continue
+		}
+		fmt.Printf("ub=%d → %.1f tok/s; ", ub, tps2)
+		if tps2 > ubBestTPS {
+			ubBestTPS = tps2
+			ubBestArgs = args2
+			ubBestVRAM = vram2
+		}
+	}
+	fmt.Println()
+	// Phase 2 结果覆盖 Phase 1（只要有成功的测试）
+	if ubBestTPS > 0 {
+		bestTPS = ubBestTPS
+		bestArgs = ubBestArgs
+		bestVRAM = ubBestVRAM
+	}
+
+	fmt.Printf("      \u2713 %.1f tok/s @ %s ctx\n", bestTPS, fmtCtx(bestCtx))
 
 	// Save profile
 	optimized := &OptimizedProfile{
@@ -160,24 +328,34 @@ func Warmup(profile *model.DeployProfile, binaryPath, modelPath string, hw *hard
 	return optimized, nil
 }
 
-// BuildArgs constructs llama-server arguments with specific batch sizes
-func BuildArgs(profile *model.DeployProfile, modelPath string, port int, hw *hardware.HardwareProbe, batchSize, ubatchSize int) []string {
+// alignToPow2 rounds down to the nearest power of 2 (min 4096).
+func alignToPow2(n int) int {
+	powers := []int{524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096}
+	for _, p := range powers {
+		if n >= p {
+			return p
+		}
+	}
+	return 4096
+}
+
+// BuildArgs constructs llama-server arguments with explicit ctx size and batch sizes.
+func BuildArgs(profile *model.DeployProfile, modelPath string, port int, hw *hardware.HardwareProbe, ctxSize, batchSize, ubatchSize int) []string {
 	gpu := hw.PrimaryGPU()
-	vramGB := 0
+	vramMB := 0
 	if gpu != nil {
-		vramGB = gpu.VRAM_MB / 1024
+		vramMB = gpu.VRAM_MB
 	}
 
-	// Use params rules for ctx-size and KV cache
-	ctxSize := DynamicCtxSize(hw, profile)
+	// KV cache 类型：基于 VRAM 计算自动选择最快的类型
+	// 优先 f16（最快），装不下就降到 q8_0+q4_0，再不行用 iso3
+	kvK, kvV := profile.SelectKVCacheType(vramMB, ctxSize)
 
-	// KV cache 量化：iso3 优先
-	kvK := "q8_0"
-	kvV := kvCacheVByVRAM(vramGB)
-	if profile.HasIsoQuant {
-		kvK = "iso3"
-		kvV = "iso3"
-	}
+	// Parallel slots: 单用户场景用 1 slot（速度优先）
+	// 8GB 以下必须 1 slot，大显存可以考虑多 slot 但目前统一用 1
+	parallel := "1"
+
+	useMlock := shouldMlock(hw, profile)
 
 	args := []string{
 		"--model", modelPath,
@@ -185,34 +363,38 @@ func BuildArgs(profile *model.DeployProfile, modelPath string, port int, hw *har
 		"--port", strconv.Itoa(port),
 		"--n-gpu-layers", "999",
 		"--flash-attn", "on",
+		"--parallel", parallel,
 		"--cont-batching",
 		"--metrics",
 		"--no-webui",
-		"--cache-reuse", "256",
+		"--cache-reuse", strconv.Itoa(cacheReuseForCtx(ctxSize)),
 		"-ctk", kvK,
 		"-ctv", kvV,
 		"--ctx-size", strconv.Itoa(ctxSize),
-		"--threads", strconv.Itoa(hw.CPU.Cores),
+		"--threads", strconv.Itoa(threadsForMode(profile.Mode, hw)),
 		"--batch-size", strconv.Itoa(batchSize),
 		"--ubatch-size", strconv.Itoa(ubatchSize),
+		"--kv-unified",
+		"--fit", "on",
+	}
+
+	// mlock: lock model in RAM when headroom is sufficient
+	if useMlock {
+		args = append(args, "--mlock")
+	}
+
+	// mmap: accelerate model loading via memory-mapped I/O
+	// Skip when mlock is active (mlock+mmap can conflict on some systems)
+	if !useMlock && shouldMmap(hw, profile) {
+		args = append(args, "--mmap")
 	}
 
 	// MoE-specific parameters
 	if profile.Mode == "moe_offload" && profile.OTFlags != "" {
-		// Parse OT flags: '-ot ".ffn_.*_exps.=CPU"'
 		otValue := strings.TrimPrefix(profile.OTFlags, "-ot ")
 		otValue = strings.Trim(otValue, "\"'")
 		args = append(args, "-ot", otValue)
 	}
-
-	// MTP speculative decoding — disabled until llama-server supports it
-	// if profile.NativeMTP {
-	// 	args = append(args,
-	// 		"--speculative-algo", "NEXTN",
-	// 		"--speculative-num-steps", "3",
-	// 		"--speculative-num-draft-tokens", "4",
-	// 	)
-	// }
 
 	return args
 }
@@ -394,4 +576,113 @@ func saveProfile(profile *OptimizedProfile, path string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// threadsForMode returns the optimal thread count based on inference mode.
+// full_gpu: GPU does all the work, CPU just orchestrates — 2 threads suffice.
+// moe_offload: CPU handles expert layers, needs real parallelism.
+func threadsForMode(mode string, hw *hardware.HardwareProbe) int {
+	if mode == "moe_offload" {
+		t := hw.CPU.Cores / 2
+		if t < 4 {
+			t = 4
+		}
+		return t
+	}
+	return 2
+}
+
+// checkRAMSafety warns when free RAM is too low for comfortable operation.
+// Reserve = max(Total_MB * 20%, 2048 MB) for system stability.
+func checkRAMSafety(hw *hardware.HardwareProbe, profile *model.DeployProfile) string {
+	totalMB := hw.RAM.Total_MB
+	freeMB := hw.RAM.Free_MB
+
+	reserveMB := totalMB / 5
+	if reserveMB < 2048 {
+		reserveMB = 2048
+	}
+
+	var modelRAM_MB uint64
+	if profile.Mode == "moe_offload" {
+		modelRAM_MB = uint64(profile.Size_GB * 1024 * 0.9)
+	} else {
+		modelRAM_MB = uint64(profile.Size_GB * 1024 * 0.1)
+	}
+
+	needed := modelRAM_MB + reserveMB
+	if freeMB < needed {
+		return fmt.Sprintf("Warning: RAM tight: %.1f GB free, need ~%.1f GB (%.1f GB model + %.1f GB reserve)",
+			float64(freeMB)/1024,
+			float64(needed)/1024,
+			float64(modelRAM_MB)/1024,
+			float64(reserveMB)/1024)
+	}
+	return ""
+}
+
+// shouldMlock returns true when there's enough RAM headroom to safely lock
+// the model in memory. mlock prevents swapping model pages to disk.
+// Only enabled when remaining RAM after model load > 30% of total.
+func shouldMlock(hw *hardware.HardwareProbe, profile *model.DeployProfile) bool {
+	totalMB := float64(hw.RAM.Total_MB)
+	freeMB := float64(hw.RAM.Free_MB)
+	if totalMB == 0 {
+		return false
+	}
+
+	var modelRAM_MB float64
+	if profile.Mode == "moe_offload" {
+		modelRAM_MB = profile.Size_GB * 1024 * 0.9
+	} else {
+		modelRAM_MB = profile.Size_GB * 1024 * 0.1
+	}
+
+	remainingAfterLoad := freeMB - modelRAM_MB
+	return remainingAfterLoad > totalMB*0.3
+}
+
+// cacheReuseForCtx returns dynamic cache-reuse size based on context.
+// Larger ctx → longer system prompts → more tokens worth caching.
+func cacheReuseForCtx(ctxSize int) int {
+	switch {
+	case ctxSize >= 32768:
+		return 1024
+	case ctxSize >= 8192:
+		return 512
+	default:
+		return 256
+	}
+}
+
+// shouldMmap returns true when memory-mapped I/O should be used for faster model loading.
+// Enabled when model size < 70% of available RAM (avoids swap pressure).
+func shouldMmap(hw *hardware.HardwareProbe, profile *model.DeployProfile) bool {
+	freeMB := float64(hw.RAM.Free_MB)
+	modelMB := profile.Size_GB * 1024
+	return modelMB < freeMB*0.7
+}
+
+// fmtCtx formats a ctx size for human display: "8K", "12K", "65536" etc.
+func fmtCtx(ctx int) string {
+	if ctx >= 1024 && ctx%1024 == 0 {
+		return fmt.Sprintf("%dK", ctx/1024)
+	}
+	return strconv.Itoa(ctx)
+}
+
+// extractArgValue extracts the value of a flag from args (e.g., "--ctx-size" → "8K")
+func extractArgValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			val := args[i+1]
+			if flag == "--ctx-size" {
+				if n, err := strconv.Atoi(val); err == nil {
+					return fmtCtx(n)
+				}
+			}
+			return val
+		}
+	}
+	return ""
 }

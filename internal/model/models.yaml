@@ -9,6 +9,7 @@ models:
     layers: 28
     experts_total: 0
     experts_active: 0
+    kv_heads: 2
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -54,6 +55,7 @@ models:
     layers: 28
     experts_total: 0
     experts_active: 0
+    kv_heads: 2
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -99,6 +101,7 @@ models:
     layers: 36
     experts_total: 0
     experts_active: 0
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -144,6 +147,7 @@ models:
     layers: 36
     experts_total: 0
     experts_active: 0
+    kv_heads: 8
     native_mtp: true
     quantizations:
       - id: q8-0
@@ -189,6 +193,7 @@ models:
     layers: 40
     experts_total: 0
     experts_active: 0
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -234,6 +239,7 @@ models:
     layers: 64
     experts_total: 0
     experts_active: 0
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -279,6 +285,7 @@ models:
     layers: 48
     experts_total: 128
     experts_active: 8
+    kv_heads: 4
     native_mtp: true
     quantizations:
       - id: ud-q5-k-xl
@@ -324,6 +331,7 @@ models:
     layers: 48
     experts_total: 128
     experts_active: 8
+    kv_heads: 4
     native_mtp: true
     quantizations:
       - id: ud-q5-k-xl
@@ -369,6 +377,7 @@ models:
     layers: 94
     experts_total: 128
     experts_active: 8
+    kv_heads: 8
     native_mtp: true
     quantizations:
       - id: ud-q5-k-xl
@@ -415,6 +424,7 @@ models:
     layers: 34
     experts_total: 0
     experts_active: 0
+    kv_heads: 4
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -452,6 +462,7 @@ models:
     layers: 48
     experts_total: 0
     experts_active: 0
+    kv_heads: 4
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -489,6 +500,7 @@ models:
     layers: 62
     experts_total: 0
     experts_active: 0
+    kv_heads: 4
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -534,6 +546,7 @@ models:
     layers: 40
     experts_total: 0
     experts_active: 0
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -571,6 +584,7 @@ models:
     layers: 32
     experts_total: 0
     experts_active: 0
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -609,6 +623,7 @@ models:
     layers: 48
     experts_total: 16
     experts_active: 2
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: ud-q4-k-xl
@@ -646,6 +661,7 @@ models:
     layers: 48
     experts_total: 128
     experts_active: 2
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: ud-q2-k-xl
@@ -677,6 +693,7 @@ models:
     layers: 61
     experts_total: 256
     experts_active: 8
+    kv_heads: 8
     native_mtp: true
     quantizations:
       - id: ud-q4-k-xl
@@ -714,6 +731,7 @@ models:
     layers: 61
     experts_total: 256
     experts_active: 8
+    kv_heads: 8
     native_mtp: true
     quantizations:
       - id: ud-q4-k-xl
@@ -745,6 +763,7 @@ models:
     layers: 56
     experts_total: 0
     experts_active: 0
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -782,6 +801,7 @@ models:
     layers: 56
     experts_total: 0
     experts_active: 0
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: q8-0
@@ -820,6 +840,7 @@ models:
     layers: 32
     experts_total: 8
     experts_active: 2
+    kv_heads: 8
     native_mtp: false
     quantizations:
       - id: q5-k-m

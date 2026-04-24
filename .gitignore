@@ -25,3 +25,4 @@ Thumbs.db
 # Kaiwu runtime
 .kaiwu/
 *.log
+internal.zip

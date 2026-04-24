@@ -226,6 +226,7 @@ type Monitor struct {
 	running     bool
 	ctxTotal    int      // set from config
 	lastAlerts  []string // dedup: only print new alerts
+	ParamInfo   string   // runtime params summary (e.g., "64K ctx · f16 KV · ub512 · mlock")
 }
 
 // NewMonitor creates a new monitor
@@ -306,6 +307,11 @@ func (m *Monitor) renderPanel(d MonitorData) {
 		fmt.Print("空载")
 	}
 	fmt.Print(" ─────────────────── 每 2s 刷新 ─\033[0m\n")
+
+	// 参数行（如果有）
+	if m.ParamInfo != "" {
+		fmt.Printf("  \033[36m%s\033[0m\n", m.ParamInfo)
+	}
 
 	// 指标行
 	fmt.Print("  ")

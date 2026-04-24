@@ -26,6 +26,10 @@ type DeployProfile struct {
 	OTFlags      string
 	StopTokens   []string
 	Layers       int
+	KVHeads      int  // GQA kv_heads 数量，用于 KV cache 精确计算
+	HeadDim      int  // attention head dimension（通常 128）
+	EmbeddingDim int  // embedding dimension（hidden_size）
+	NativeCtx    int  // 模型原生最大上下文（从 GGUF context_length 读取）
 	CtxOverride  int  // 微调模式：用户手动指定的 ctx 大小，0 = 自动
 	HasIsoQuant  bool // IsoQuant KV cache 压缩是否可用
 }
@@ -47,6 +51,8 @@ func Match(model *ModelDef, hw *hardware.HardwareProbe) (*DeployProfile, error) 
 		NativeMTP:   model.NativeMTP,
 		StopTokens:  model.StopTokens,
 		Layers:      model.Layers,
+		KVHeads:     model.KVHeads,
+		HeadDim:     model.HeadDim,
 		HasIsoQuant: true, // 默认启用 iso3，不支持时 llama-server 会自动回退
 	}
 
@@ -99,6 +105,7 @@ func Match(model *ModelDef, hw *hardware.HardwareProbe) (*DeployProfile, error) 
 			profile.Size_GB = best.Size_GB
 			profile.Mode = "moe_offload"
 			profile.OTFlags = model.MoeOffloadTemplate
+			enrichFromGGUF(profile)
 			return profile, nil
 		}
 	}
@@ -120,6 +127,7 @@ func Match(model *ModelDef, hw *hardware.HardwareProbe) (*DeployProfile, error) 
 		profile.HFFile = best.HFFile
 		profile.Size_GB = best.Size_GB
 		profile.Mode = "full_gpu"
+		enrichFromGGUF(profile)
 		return profile, nil
 	}
 
@@ -135,6 +143,7 @@ func Match(model *ModelDef, hw *hardware.HardwareProbe) (*DeployProfile, error) 
 		profile.Size_GB = best.Size_GB
 		profile.Mode = "moe_offload"
 		profile.OTFlags = model.MoeOffloadTemplate
+		enrichFromGGUF(profile)
 		return profile, nil
 	}
 
@@ -156,6 +165,7 @@ func Match(model *ModelDef, hw *hardware.HardwareProbe) (*DeployProfile, error) 
 			profile.HFFile = best.HFFile
 			profile.Size_GB = best.Size_GB
 			profile.Mode = "full_gpu"
+			enrichFromGGUF(profile)
 			return profile, nil
 		}
 	}
@@ -221,4 +231,66 @@ func isLocalAvailable(hfFilePattern string) bool {
 	}
 
 	return false
+}
+
+// findLocalGGUF finds a local .gguf file matching the HFFile pattern.
+// Returns the full path or "" if not found.
+func findLocalGGUF(hfFilePattern string) string {
+	searchTerm := strings.ReplaceAll(hfFilePattern, "*", "")
+	searchTerm = strings.ToLower(searchTerm)
+
+	dirs := []string{config.ModelDir()}
+	dirs = append(dirs,
+		filepath.Join("D:", "program", "ollama", "test"),
+		filepath.Join("D:", "program", "ollama", "kaiwu-launcher", "models"),
+	)
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := strings.ToLower(entry.Name())
+			if strings.Contains(name, searchTerm) && strings.HasSuffix(name, ".gguf") {
+				fullPath := filepath.Join(dir, entry.Name())
+				if info, err := os.Stat(fullPath); err == nil && info.Size() > 100*1024*1024 {
+					return fullPath
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// enrichFromGGUF reads GGUF metadata from the local model file and overwrites
+// Layers, KVHeads, HeadDim, NativeCtx with the real values from the file header.
+// yaml values are only used as fallback when the file isn't available yet.
+func enrichFromGGUF(profile *DeployProfile) {
+	path := findLocalGGUF(profile.HFFile)
+	if path == "" {
+		return
+	}
+	meta, err := ReadGGUFMeta(path)
+	if err != nil {
+		return
+	}
+	if meta.Layers > 0 {
+		profile.Layers = meta.Layers
+	}
+	if meta.KVHeads > 0 {
+		profile.KVHeads = meta.KVHeads
+	}
+	if meta.HeadDim > 0 {
+		profile.HeadDim = meta.HeadDim
+	}
+	if meta.ContextLength > 0 {
+		profile.NativeCtx = meta.ContextLength
+	}
+	if meta.EmbeddingDim > 0 {
+		profile.EmbeddingDim = meta.EmbeddingDim
+	}
 }

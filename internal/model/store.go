@@ -30,6 +30,8 @@ type ModelDef struct {
 	Layers             int            `yaml:"layers"`
 	ExpertsTotal       int            `yaml:"experts_total"`
 	ExpertsActive      int            `yaml:"experts_active"`
+	KVHeads            int            `yaml:"kv_heads"`
+	HeadDim            int            `yaml:"head_dim"`
 	NativeMTP          bool           `yaml:"native_mtp"`
 	Quantizations      []Quantization `yaml:"quantizations"`
 	MoeOffloadTemplate string         `yaml:"moe_offload_template"`

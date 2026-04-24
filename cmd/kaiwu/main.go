@@ -68,16 +68,18 @@ func newRunCmd() *cobra.Command {
 	var fast bool
 	var bench bool
 	var ctxSize int
+	var reset bool
 	cmd := &cobra.Command{
 		Use:   "run <model>",
 		Short: "Deploy and start a model",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runModel(args[0], fast, bench, ctxSize)
+			return runModel(args[0], fast, bench, ctxSize, reset)
 		},
 	}
 	cmd.Flags().BoolVar(&fast, "fast", false, "Skip warmup, use cached profile")
 	cmd.Flags().BoolVar(&bench, "bench", false, "Run benchmark after starting")
+	cmd.Flags().BoolVar(&reset, "reset", false, "清除缓存，重新 warmup 探测最优参数")
 	// 微调模式：手动指定上下文大小（覆盖自动计算）
 	// 建议值：4096, 8192, 16384, 32768, 65536, 131072
 	// 越大上下文越长但越慢，越小速度越快但上下文短
@@ -282,7 +284,7 @@ func showMainMenu() {
 	fmt.Println()
 }
 
-func runModel(modelName string, fast, bench bool, ctxSize int) error {
+func runModel(modelName string, fast, bench bool, ctxSize int, reset bool) error {
 	printLogo()
 	fmt.Println()
 
@@ -363,6 +365,13 @@ func runModel(modelName string, fast, bench bool, ctxSize int) error {
 
 	// [5/6] Warmup benchmark
 	fmt.Printf("\n[5/6] Warmup benchmark...\n")
+	if reset {
+		if err := optimizer.ClearProfileCache(profile.ModelID, hw); err != nil {
+			fmt.Printf("      ⚠️  清除缓存失败: %v\n", err)
+		} else {
+			fmt.Printf("      已清除缓存，重新探测\n")
+		}
+	}
 	optimized, err := optimizer.Warmup(profile, binaryPath, modelPath, hw, fast)
 	if err != nil {
 		fmt.Printf("      ⚠️  Warmup failed: %v\n", err)
@@ -393,6 +402,9 @@ func runModel(modelName string, fast, bench bool, ctxSize int) error {
 
 	// Start monitor
 	mon := monitor.NewMonitor(eng.Port, profile.DisplayName)
+	if optimized != nil {
+		mon.ParamInfo = buildParamSummary(optimized.LaunchArgs)
+	}
 	mon.StartAsync()
 
 	tpsStr := ""
@@ -455,6 +467,39 @@ func runModel(modelName string, fast, bench bool, ctxSize int) error {
 	dim.Println("感谢使用 Kaiwu · 访问 llmbbs.ai 获取更多本地 AI 技巧和模型推荐")
 
 	return nil
+}
+
+// buildParamSummary extracts key params from launch args into a human-readable string.
+func buildParamSummary(args []string) string {
+	var parts []string
+	for i, a := range args {
+		if i+1 >= len(args) {
+			break
+		}
+		v := args[i+1]
+		switch a {
+		case "--ctx-size":
+			if n, err := strconv.Atoi(v); err == nil {
+				parts = append(parts, fmt.Sprintf("%dK ctx", n/1024))
+			}
+		case "-ctk":
+			parts = append(parts, "KV:"+v)
+		case "--ubatch-size":
+			parts = append(parts, "ub"+v)
+		case "--cache-reuse":
+			parts = append(parts, "reuse:"+v)
+		}
+	}
+	// Check for flags without values
+	for _, a := range args {
+		switch a {
+		case "--mlock":
+			parts = append(parts, "mlock")
+		case "--mmap":
+			parts = append(parts, "mmap")
+		}
+	}
+	return strings.Join(parts, " · ")
 }
 
 func stopModel() error {

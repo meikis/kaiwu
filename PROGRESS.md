@@ -173,6 +173,195 @@ q8_0+q4_0 (官方b8851)   4K     11.1 tok/s   5.0/8.1  —
 iso3+iso3 (turboquant)   待测    待测         待测     待测
 ```
 
+### 本地实测 2（2026-04-23/24, RTX 5060 Laptop 8GB, 16GB RAM）
+
+#### Qwen3-8B Q5_K_M (5.6GB), dense, iso3+FA+MTP
+
+```
+模式          ctx     速度         VRAM       备注
+──────────────────────────────────────────────────────────
+No Think      32K     22.0 tok/s   7.2/8 GB   iso3 生效
+Thinking      32K     15.5 tok/s   7.2/8 GB   1024 tok 未 think 完
+Prompt(261t)  32K     261.6 tok/s  7.2/8 GB   oobabooga 公式零重试
+```
+
+#### Qwen3-30B-A3B Q3_K_XL (13GB), MoE offload, iso3+FA
+
+```
+模式          ctx     速度         VRAM       备注
+──────────────────────────────────────────────────────────
+No Think      4K      14.2 tok/s   2.4/8 GB   RAM 不足(5GB/11.6GB)，warmup 失败
+Thinking      4K      11.2 tok/s   2.4/8 GB   experts on CPU
+```
+
+#### Llama 3.1 8B Q5_K_M (5.4GB), dense, iso3+FA（无 MTP）
+
+```
+模式          ctx     速度         VRAM       备注
+──────────────────────────────────────────────────────────
+Generation    4K      41.5 tok/s   6.9/8 GB   不带 thinking，速度快
+Prompt(542t)  4K      ~218 tok/s   6.9/8 GB   warmup: 37.2 tok/s
+```
+
+**iso3 适配结论：**
+- iso3 对所有模型默认启用（`HasIsoQuant: true`），运行时检测 llama-server 是否支持
+- Llama 3.1 的 iso3 确实生效（启动参数含 `-ctk iso3 -ctv iso3`）
+- ctx 只有 4K 不是 iso3 不支持，而是 VRAM 不足（oobabooga 公式反解）
+- Qwen3-8B 能拿到 32K 是因为启动时 free VRAM 更多（~6.5GB vs ~5.9GB）
+
+### VPS AB 测试（2026-04-23, 双 RTX 4090 24GB, 128GB RAM）
+
+模型：Qwen3.6-35B-A3B UD-Q4_K_XL, ctx=512K, 4 slots
+
+```
+指标                A组: Kaiwu (iso3+MTP)    B组: llama-server 默认
+──────────────────────────────────────────────────────────────────
+No Think 速度       126.5 tok/s              136.1 tok/s
+Thinking 速度       125.5 tok/s (217 tok)    138.5 tok/s (232 tok)
+Prompt(524t)        0.72s                    0.65s
+GPU0 VRAM           18,546 MiB               23,016 MiB
+GPU1 VRAM           17,216 MiB               20,362 MiB
+总 VRAM             35,762 MiB               43,378 MiB
+RAM                 4,089 MB                 3,736 MB
+```
+
+**AB 测试结论：**
+- 速度：默认参数反而快 ~8%（iso3 在 VRAM 充裕时有额外解码开销）
+- VRAM：Kaiwu iso3 省 7.6 GB（35.7 vs 43.4 GB）
+- iso3 的价值在 VRAM 紧张设备上（8GB 5060），不在双 4090 场景
+
+### 体验优化：速度阈值 + 多参数调优（✅ 已完成, 2026-04-24）
+
+**问题：** warmup 只找"能启动的最大 ctx"，不管速度。64K ctx 启动成功但只有 7.8 tok/s，体验极差。
+
+**改动：**
+1. **速度感知 ctx 选择** — Phase 1 循环加 `minAcceptableTPS = 20.0` 检查，速度不够就 ctx 减半继续探测
+2. **threads 修正** — full_gpu: 2 线程（GPU 推理不需要 CPU），moe_offload: max(Cores/2, 4)
+3. **RAM 安全检查** — 启动前检查 RAM 余量，不足时警告（reserve = max(Total×20%, 2GB)）
+4. **mlock 支持** — RAM 余量 > 30% 时自动加 `--mlock`，防止模型被 swap 到磁盘
+
+**改动文件：** `optimizer/warmup.go`, `optimizer/params.go`, `engine/runner.go`
+
+**Llama 3.1 8B 实测（RTX 5060 8GB, 16GB RAM）：**
+
+```
+探测过程                    改动前          改动后
+──────────────────────────────────────────────────────
+Probe 1: ctx=64K           7.8 tok/s ✅    7.0 tok/s (< 20, too slow)
+Probe 2: ctx=32K           —               10.5 tok/s (< 20, too slow)
+Probe 3: ctx=16K           —               13.8 tok/s (< 20, too slow)
+Probe 4: ctx=8K            —               19.4 tok/s (fallback, best)
+最终结果                    64K / 7.8 tok/s  8K / 19.4 tok/s
+```
+
+**结论：** 速度从 7.8 → 19.4 tok/s（2.5 倍提升），ctx 从 64K 降到 8K 但体验大幅改善。8K ctx 对普通对话足够，长文档场景可手动 `--ctx-size 32768` 覆盖。
+
+### iso3 性能排查 + LM Studio 对比（2026-04-24）
+
+**问题：** Kaiwu 19.4 tok/s vs LM Studio 46.5 tok/s，同模型同 VRAM 速度差一倍。
+
+**排查过程：** 逐个参数排查，找到三个瓶颈。
+
+**Llama 3.1 8B Q5_K_M @ RTX 5060 8GB 完整对比：**
+
+```
+配置                      KV cache    parallel  ctx    速度(实际)   VRAM
+──────────────────────────────────────────────────────────────────────────
+起点 (iso3+4slot)         iso3+iso3   4         8K     19.4 tok/s   7.2 GB
+关 iso3 (q8_0+4slot)      q8_0+q4_0   4        64K     18.5 tok/s   7.2 GB
+关 iso3+1slot             q8_0+q4_0   1         8K     38.2 tok/s   6.4 GB
+f16 KV+1slot              f16+f16     1         8K     51.7 tok/s   7.0 GB
+f16 KV+1slot (自动)       f16+f16     1        64K     26.2 tok/s   7.3 GB  ← 最终版
+LM Studio                 未知        未知       8K     46.5 tok/s   7.2 GB
+```
+
+**三个瓶颈及影响：**
+1. **iso3 解码开销** — 19.4 → 38.2 tok/s（+97%），8GB 机器 iso3 不划算
+2. **4 slot → 1 slot** — 实际推理 18.5 → 38.2 tok/s（+106%），单用户不需要多 slot
+3. **q4_0 V cache → f16** — 38.2 → 51.7 tok/s（+35%），量化解码有代价
+
+**最终版本效果：**
+- 64K ctx / 26.2 tok/s（起点 7.8 tok/s，提升 3.4 倍）
+- 同 8K ctx 对比 LM Studio：51.7 vs 46.5 tok/s（Kaiwu 快 11%）
+- ctx 大 8 倍（64K vs 8K），速度只慢 43%，trade-off 合理
+
+**代码改动（最终版 v1）：**
+
+KV cache 动态策略（`optimizer/warmup.go` + `engine/runner.go`）：
+- VRAM ≤ 8GB：f16+f16（速度优先）
+- VRAM 8-16GB：q8_0+q4_0（平衡）
+- VRAM > 16GB：iso3+iso3（ctx 优先）
+
+其他改动：
+- `--parallel 1`（单用户模式，所有 VRAM 档位）
+- `--ctx-size` 用户覆盖 bug 修复（warmup 读取 `profile.CtxOverride`）
+- threads: full_gpu=2, moe_offload=max(Cores/2, 4)
+- RAM 安全检查 + mlock 自动启用
+
+### 参数自适应优化 v2（2026-04-24）
+
+**目标：** 消除硬编码档位，改为基于 VRAM 计算的自适应策略。
+
+**改动内容：**
+
+1. **ubatch 探测**（`warmup.go` Phase 2）
+   - 实测 128 vs 512，选速度快的
+   - 不写死，让实测决定
+   - 修复 bug：Phase 2 结果总是覆盖 Phase 1（独立比较）
+
+2. **KV cache 计算驱动**（新文件 `model/kv_cache.go`）
+   - 公式：`KV_MB = 2 * layers * kv_heads * head_dim * ctx * bytes_per_element / (1024*1024)`
+   - 策略：算 f16 KV cache 占多少显存，`freeVRAM - modelSize - f16KV > 1024MB` → 用 f16，否则降到 q8_0+q4_0
+   - 不再按 8/16/24GB 档位硬编码，完全基于计算
+
+3. **新增参数**
+   - `--kv-unified`（多 slot 共享 KV cache，减少碎片）
+   - `--fit on`（llama.cpp 自动适配未设置参数）
+
+**测试结果（Llama 3.1 8B Q5_K_M @ RTX 5060 8GB）：**
+
+```
+配置                ctx     KV cache    ubatch  速度(warmup)  速度(实际)   VRAM
+────────────────────────────────────────────────────────────────────────────
+v1 (档位逻辑)       64K     f16+f16     128     26.2 tok/s    ~20 tok/s    7.3 GB
+v2 (计算驱动)       64K     f16+f16     512     28.7 tok/s    ~20 tok/s    7.6 GB
+v2 (计算驱动)       8K      f16+f16     512     51.1 tok/s    56.7 tok/s   7.5 GB
+LM Studio           8K      未知        未知    —             46.5 tok/s   7.2 GB
+```
+
+**关键发现：**
+
+1. **ubatch=512 比 128 快**
+   - 8K ctx: 51.1 vs 47.5 tok/s (+7.6%)
+   - 64K ctx: 28.7 vs 23.6 tok/s (+21.6%)
+
+2. **ctx 对速度影响巨大**
+   - 8K ctx: 56.7 tok/s（VRAM 92%）
+   - 64K ctx: 20.0 tok/s（VRAM 94%）
+   - ctx 大 8 倍，速度慢 2.8 倍
+
+3. **Kaiwu 8K 超过 LM Studio 22%**
+   - Kaiwu: 56.7 tok/s
+   - LM Studio: 46.5 tok/s
+   - 同配置（8K ctx, f16 KV, Q5_K_M）
+
+4. **KV cache 自适应生效**
+   - 8GB 机器自动选 f16（计算判断装得下）
+   - 64K ctx 下 f16 KV 占 ~2.3 GB（模型 5.3 + KV 2.3 + 余量 = 7.6 GB）
+
+**代码改动（v2）：**
+
+- `model/kv_cache.go`：新增 `EstimateKVCacheMB()` 和 `SelectKVCacheType()` 方法
+- `optimizer/warmup.go`：Phase 2 改为 ubatch 探测（128 vs 512），修复覆盖逻辑
+- `engine/runner.go`：同步 KV cache 自适应策略
+- `optimizer/params.go`：统一 KV cache 逻辑，删除旧的 `kvCacheVByVRAM()`
+- 三处 BuildArgs/buildArgs 加 `--kv-unified` 和 `--fit on`
+
+**下一步待调：**
+- warmup 测速 vs 实际推理速度差异（64K ctx 下 warmup 28.7 但实际 20）
+- 多用户/IDE 场景的 parallel 策略（kaiwu serve 模式）
+- 冷启动优化（首次请求 4.7-10.9 tok/s）
+
 ### 待解决问题
 
 1. **Windows 编译 turboquant fork** — ✅ 已完成
@@ -190,6 +379,14 @@ iso3+iso3 (turboquant)   待测    待测         待测     待测
 3. **中文 prompt UTF-8 编码问题** — ✅ 已修复
    - warmup.go 的 benchmark prompt 已使用纯 ASCII 英文
    - 避免 Windows bash 环境下 UTF-8 编码错误
+
+4. **autodetect 模型 ctx 过小 (4K)** — ✅ 已修复 (2026-04-24)
+   - 根因：warmup 用 oobabooga 公式预测 ctx，公式用 q8_0/f16 拟合，严重高估 iso3 VRAM
+   - Llama 3.1 8B 只拿到 4K ctx，而同参数 Qwen3-8B 拿到 32K（取决于启动时 free VRAM 波动）
+   - 修复：warmup 改为二分探测 — 从 min(nativeCtx, 65536) 开始，OOM 就减半，最多 5 次
+   - 让 llama-server 自己决定能跑多少，不再依赖公式预测
+   - 效果：Llama 3.1 8B ctx 从 4K → 64K（16 倍），iso3 全模型统一行为
+   - 改动文件：`internal/optimizer/warmup.go`（BuildArgs 加 ctxSize 参数，Warmup 改为 probe+tune 两阶段）
 
 ---
 
@@ -217,5 +414,6 @@ iso3+iso3 (turboquant)   待测    待测         待测     待测
 
 **当前版本：** Kaiwu dev (2026-04-23 编译)
 - Go module: `github.com/val1813/kaiwu`
-- llama-server: 官方 b8851 → 待替换为 turboquant iso3 版本
-- 已部署模型：Qwen3-8B Q5_K_M, Qwen3-30B-A3B Q3_K_XL
+- llama-server: turboquant iso3 版本 (b8864)，iso3 全模型默认启用
+- 已部署模型：Qwen3-8B Q5_K_M, Llama-3.1-8B Q5_K_M
+- VPS 模型：Qwen3.6-35B-A3B UD-Q4_K_XL, UD-Q5_K_XL

@@ -2,110 +2,156 @@ package engine
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/val1813/kaiwu/internal/hardware"
 	"github.com/val1813/kaiwu/internal/model"
 )
 
-// PreflightCheck verifies there's enough VRAM to run the model.
-// If a MoE model doesn't fit in full_gpu mode, it auto-switches to offload.
+// PreflightCheck 只拦截明显不可能的情况：模型文件本身装不下。
 func PreflightCheck(profile *model.DeployProfile, hw *hardware.HardwareProbe) error {
 	gpu := hw.PrimaryGPU()
 	if gpu == nil {
-		// CPU-only: no VRAM check needed
 		return nil
 	}
 
-	// Use total VRAM minus system reserve (300MB for desktop compositor etc.)
-	// Not free VRAM — llama-server will reclaim VRAM from other idle apps
-	vramAvailGB := float64(gpu.VRAM_MB-300) / 1024.0
-	modelSizeGB := profile.Size_GB
-	ctxSize := dynamicCtxSize(gpu.VRAM_MB, profile.Size_GB, profile.Layers, profile.CtxOverride, profile.HasIsoQuant)
-	kvEstimateGB := estimateKVCacheGB(ctxSize, profile.Layers, profile.HasIsoQuant)
-	// iso3 有 ~0.6GB 固定解码 buffer 开销（实测 4090 + 35B MoE 验证）
-	overhead := 0.3
-	if profile.HasIsoQuant {
-		overhead = 0.9 // 0.3 通用 + 0.6 iso3 解码 buffer
-	}
-	totalNeeded := modelSizeGB + kvEstimateGB + overhead
+	vramGB := float64(gpu.VRAM_MB) / 1024.0
+	ramGB := float64(hw.RAM.Total_MB) / 1024.0
+	totalAvailGB := vramGB + ramGB*0.8
 
-	if profile.Mode == "full_gpu" && totalNeeded > vramAvailGB {
-		// MoE can fall back to offload
-		if profile.OTFlags != "" || profile.Arch == "moe" {
-			kvSmaller := estimateKVCacheGB(ctxSize/2, profile.Layers, profile.HasIsoQuant)
-			offloadGPU := modelSizeGB*0.1 + kvSmaller + 0.3
-			if offloadGPU < vramAvailGB {
-				fmt.Println("      ⚠️  显存不足，自动启用 MoE offload 模式")
-				profile.Mode = "moe_offload"
-				// MoE offload 需要大量 RAM，检查是否足够
-				checkRAMForOffload(profile, hw)
-				return nil
-			}
-		}
-		return fmt.Errorf("显存不足：需要 %.1f GB，可用 %.1f GB\n"+
-			"  建议：选择更小的量化或使用 MoE offload 模型",
-			totalNeeded, vramAvailGB)
+	if profile.Size_GB > totalAvailGB {
+		return fmt.Errorf("模型 %.1f GB 超出可用内存 %.1f GB\n"+
+			"  建议：选择更小的量化",
+			profile.Size_GB, totalAvailGB)
+	}
+
+	if profile.Mode == "moe_offload" {
+		checkRAMForOffload(profile, hw)
 	}
 
 	return nil
 }
 
-// checkRAMForOffload 检查 MoE offload 模式下 RAM 是否充足
-// 如果 RAM 紧张，给用户提示建议用更小模型
 func checkRAMForOffload(profile *model.DeployProfile, hw *hardware.HardwareProbe) {
-	// MoE offload: 90% 模型在 RAM，10% 在 GPU
 	ramNeededGB := profile.Size_GB * 0.9
 	ramAvailGB := float64(hw.RAM.Total_MB) / 1024.0
 	ramFreeGB := float64(hw.RAM.Free_MB) / 1024.0
 
-	// 需要至少 3GB 余量给系统和 KV cache
 	if ramNeededGB > ramAvailGB-3 {
 		fmt.Printf("      ⚠️  RAM 可能不足：模型需要 %.1f GB，总共 %.1f GB\n", ramNeededGB, ramAvailGB)
-		fmt.Println("      建议：使用更小的模型（如 8B）以获得更好的性能")
 	} else if ramNeededGB > ramFreeGB {
 		fmt.Printf("      ⚠️  RAM 当前可用 %.1f GB，模型需要 %.1f GB\n", ramFreeGB, ramNeededGB)
-		fmt.Println("      提示：关闭其他应用可提升性能，或使用更小的模型")
 	}
 }
 
-// estimateKVCacheGB estimates KV cache size in GB.
-// iso3: 3-bit = 0.375 bytes/element (K+V 各 0.375)，总计 0.75 bytes/element
-// q8_0+q4_0: K=1 byte + V=0.5 byte = 1.5 bytes/element
-// Most modern models use GQA with ~4 kv_heads (not full 32), head_dim ~128
-func estimateKVCacheGB(ctxSize, layers int, hasIsoQuant bool) float64 {
-	// GQA: kv_heads typically 4 for 8B-32B models
-	kvBytesPerElement := 1.5
-	if hasIsoQuant {
-		kvBytesPerElement = 0.75 // iso3 K + iso3 V = 0.375 + 0.375
-	}
-	bytes := float64(layers*ctxSize*128*4) * kvBytesPerElement
-	return bytes / (1024 * 1024 * 1024)
+// oobabooga 公式（19517 次实测，60 个模型，中位误差 365 MiB）
+// 来源：https://oobabooga.github.io/blog/posts/gguf-vram-formula/
+//
+// vram_mib = (size_per_layer - 17.996 + 0.0000315 * kv_cache_factor)
+//            * (gpu_layers + max(0.969, cache_type - (floor(50.778 * emb_per_ctx) + 9.988)))
+//            + 1516.523
+//
+// size_per_layer = size_in_mb / n_layers
+// kv_cache_factor = n_kv_heads * cache_type * ctx_size
+// embedding_per_context = embedding_dim / ctx_size
+
+// PredictVRAM 用 oobabooga 公式预测 VRAM 占用（MiB）
+func PredictVRAM(sizeInMB float64, nLayers, gpuLayers, kvHeads, embeddingDim, ctxSize int, cacheType float64) float64 {
+	sizePerLayer := sizeInMB / float64(nLayers)
+	kvCacheFactor := float64(kvHeads) * cacheType * float64(ctxSize)
+	embPerCtx := float64(embeddingDim) / float64(ctxSize)
+
+	term1 := sizePerLayer - 17.99552795246051 + 3.148552680382576e-05*kvCacheFactor
+	term2 := float64(gpuLayers) + math.Max(0.9690636483914102, cacheType-(math.Floor(50.77817218646521*embPerCtx)+9.987899908205632))
+
+	return term1*term2 + 1516.522943869404
 }
 
-// dynamicCtxSize 计算最优 ctx（避免循环依赖，本地实现）
-func dynamicCtxSize(vramMB int, modelSizeGB float64, layers, ctxOverride int, hasIsoQuant bool) int {
-	if ctxOverride > 0 {
-		return ctxOverride
+// SolveMaxCtx 反解 oobabooga 公式：给定可用 VRAM，求最大 ctx_size
+// 二分搜索，因为公式对 ctx 不是简单线性关系
+func SolveMaxCtx(freeVRAM_MiB float64, sizeInMB float64, nLayers, gpuLayers, kvHeads, embeddingDim int, cacheType float64) int {
+	lo, hi := 512, 524288 // 搜索范围 512 ~ 512K
+
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		predicted := PredictVRAM(sizeInMB, nLayers, gpuLayers, kvHeads, embeddingDim, mid, cacheType)
+		if predicted <= freeVRAM_MiB {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
 	}
-	if vramMB == 0 {
+	return lo
+}
+
+// IdealStartCtx 用 oobabooga 公式计算首次尝试的上下文大小
+// 策略：min(模型原生最大ctx, oobabooga公式反解的最大ctx)
+// 加 577 MiB safety buffer（95% 置信度）
+func IdealStartCtx(profile *model.DeployProfile, hw *hardware.HardwareProbe) int {
+	if profile.CtxOverride > 0 {
+		return profile.CtxOverride
+	}
+
+	gpu := hw.PrimaryGPU()
+	if gpu == nil {
 		return 4096
 	}
-	// iso3 有 ~600MB 固定解码 buffer 开销（实测验证）
-	isoOverheadMB := 0.0
-	if hasIsoQuant {
-		isoOverheadMB = 600
+
+	// 模型原生最大 ctx
+	nativeMax := profile.NativeCtx
+	if nativeMax <= 0 {
+		nativeMax = 131072
 	}
-	vramAvailMB := float64(vramMB) - 300 - modelSizeGB*1024 - isoOverheadMB
-	kvBytesPerElement := 1.5
-	if hasIsoQuant {
-		kvBytesPerElement = 0.75
+
+	// 可用 VRAM（实际 free）
+	freeVRAM := float64(gpu.VRAMFree_MB)
+	if freeVRAM <= 0 {
+		freeVRAM = float64(gpu.VRAM_MB) - 1500
 	}
-	kvPerTokenMB := float64(layers) * 128 * 4 * kvBytesPerElement / (1024 * 1024)
-	maxTokens := int(vramAvailMB * 0.8 / kvPerTokenMB)
-	return roundCtxPow2(maxTokens)
+
+	// 减去 577 MiB safety buffer（oobabooga 95% 置信度）
+	availVRAM := freeVRAM - 577
+
+	if availVRAM < 1000 {
+		return 4096
+	}
+
+	// 模型参数
+	sizeInMB := profile.Size_GB * 1024
+	nLayers := profile.Layers
+	if nLayers <= 0 {
+		nLayers = 32
+	}
+	gpuLayers := nLayers // 全部放 GPU
+	kvHeads := profile.KVHeads
+	if kvHeads <= 0 {
+		kvHeads = 8
+	}
+	embeddingDim := profile.EmbeddingDim
+	if embeddingDim <= 0 {
+		// 从 head_dim * num_heads 估算，或用常见默认值
+		embeddingDim = 4096
+	}
+
+	// cache_type: iso3=3, q4_0=4, q8_0=8, f16=16
+	cacheType := 8.0 // 默认 q8_0+q4_0 取 K 的值
+	if profile.HasIsoQuant {
+		cacheType = 3.0
+	}
+
+	// 反解最大 ctx
+	maxCtx := SolveMaxCtx(availVRAM, sizeInMB, nLayers, gpuLayers, kvHeads, embeddingDim, cacheType)
+
+	// 取 min(nativeMax, maxCtx)，对齐到 2 的幂
+	ctx := nativeMax
+	if maxCtx < ctx {
+		ctx = maxCtx
+	}
+	return alignToPow2(ctx)
 }
 
-func roundCtxPow2(n int) int {
+// alignToPow2 向下对齐到 2 的幂次
+func alignToPow2(n int) int {
 	powers := []int{524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096}
 	for _, p := range powers {
 		if n >= p {

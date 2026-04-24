@@ -17,6 +17,9 @@ type GGUFMeta struct {
 	Name          string
 	Architecture  string
 	Layers        int
+	KVHeads       int
+	HeadDim       int
+	EmbeddingDim  int
 	ExpertsTotal  int
 	ExpertsActive int
 	ContextLength int
@@ -209,6 +212,18 @@ func ReadGGUFMeta(path string) (*GGUFMeta, error) {
 				case key == prefix+"context_length":
 					if v, ok := value.(uint32); ok {
 						meta.ContextLength = int(v)
+					}
+				case key == prefix+"attention.head_count_kv":
+					if v, ok := value.(uint32); ok {
+						meta.KVHeads = int(v)
+					}
+				case key == prefix+"attention.key_length":
+					if v, ok := value.(uint32); ok {
+						meta.HeadDim = int(v)
+					}
+				case key == prefix+"embedding_length":
+					if v, ok := value.(uint32); ok {
+						meta.EmbeddingDim = int(v)
 					}
 				}
 			}
@@ -425,6 +440,8 @@ func metaToModelDef(meta *GGUFMeta, filename string) ModelDef {
 		Layers:             layers,
 		ExpertsTotal:       meta.ExpertsTotal,
 		ExpertsActive:      meta.ExpertsActive,
+		KVHeads:            meta.KVHeads,
+		HeadDim:            meta.HeadDim,
 		MoeOffloadTemplate: moeTemplate,
 		StopTokens:         stopTokensForArch(meta.Architecture),
 		Quantizations: []Quantization{

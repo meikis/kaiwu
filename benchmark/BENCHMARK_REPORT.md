@@ -108,6 +108,43 @@ LM Studio 和 Kaiwu 都做了 MoE expert offload，但策略不同：
 Kaiwu 的精细化 offload 策略只把 MoE experts 放 CPU，attention 等关键层留在 GPU，
 减少了 CPU-GPU 数据传输，因此即使都做了 offload，Kaiwu 仍快 7 倍。
 
+## 场景四：Kaiwu iso3 vs llama-server 默认 — VPS AB 测试（2026-04-23）
+
+模型：Qwen3.6-35B-A3B UD-Q4_K_XL，双 RTX 4090 24GB，128GB RAM，ctx=512K
+
+| 指标 | Kaiwu (iso3+MTP) | llama-server 默认 | 差距 |
+|------|-------------------|-------------------|------|
+| No Think (tok/s) | 126.5 | 136.1 | 默认快 8% |
+| Thinking (tok/s) | 125.5 | 138.5 | 默认快 10% |
+| Prompt 524t 耗时 | 0.72s | 0.65s | 默认快 10% |
+| GPU0 VRAM | 18,546 MiB | 23,016 MiB | Kaiwu 省 4.4 GB |
+| GPU1 VRAM | 17,216 MiB | 20,362 MiB | Kaiwu 省 3.1 GB |
+| 总 VRAM | 35,762 MiB | 43,378 MiB | Kaiwu 省 7.6 GB (17%) |
+| RAM | 4,089 MB | 3,736 MB | 持平 |
+
+结论：VRAM 充裕时 iso3 的解码开销导致速度略慢 ~8-10%，但省 7.6 GB VRAM。
+iso3 的核心价值在 VRAM 紧张的设备上（8GB 笔记本），而非高端双卡场景。
+
+---
+
+## 场景五：非 thinking 模型对比 — Llama 3.1 8B（2026-04-24）
+
+模型：Meta-Llama-3.1-8B-Instruct Q5_K_M (5.4GB)，RTX 5060 Laptop 8GB
+
+| 指标 | Llama 3.1 8B | Qwen3-8B (对比) |
+|------|-------------|-----------------|
+| 速度 (tok/s) | 41.5 | 22.0 (no_think) |
+| Prompt (tok/s) | ~218 | 261.6 |
+| VRAM | 6.9 GB | 7.2 GB |
+| ctx | 4K | 32K |
+| iso3 | 生效 | 生效 |
+| MTP | 不支持 | 支持 |
+
+注意：Llama 3.1 generation 快 89% 主要因为不带 thinking + ctx 小 8 倍（KV cache 开销低）。
+iso3 对 Llama 3.1 确实生效（启动参数含 `-ctk iso3 -ctv iso3`），ctx 小是 VRAM 不足导致。
+
+---
+
 ## 原始数据
 
 所有测试的完整 JSON 数据保存在 `benchmark/` 目录下，可复现。

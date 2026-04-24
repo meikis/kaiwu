@@ -100,6 +100,20 @@ func (p *HardwareProbe) PrimaryGPU() *GPUInfo {
 	return primary
 }
 
+// TotalVRAM_MB returns the sum of VRAM across all GPUs
+func (p *HardwareProbe) TotalVRAM_MB() int {
+	total := 0
+	for _, g := range p.GPUs {
+		total += g.VRAM_MB
+	}
+	return total
+}
+
+// GPUCount returns the number of GPUs
+func (p *HardwareProbe) GPUCount() int {
+	return len(p.GPUs)
+}
+
 // Fingerprint returns a unique hardware fingerprint for profile caching
 // Format: "sm89_24576mb_ddr5"
 func (p *HardwareProbe) Fingerprint() string {
