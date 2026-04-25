@@ -405,8 +405,9 @@ func runModel(modelName string, fast, bench bool, ctxSize int, reset bool, llama
 	// [4/6] OOM preflight check
 	fmt.Printf("\n[4/6] Preflight check...\n")
 	// iso3 检测必须在 warmup 之前，否则 warmup 会用 iso3 参数启动失败
+	// Blackwell (SM120+) 首次运行需要 PTX JIT 编译，可能需要 30-60 秒
 	if profile.HasIsoQuant && !engine.DetectIso3Support(binaryPath) {
-		fmt.Printf("      llama-server 不支持 iso3，回退到 q8_0/q4_0\n")
+		fmt.Printf("      llama-server 不支持 iso3 (或首次 JIT 编译超时)，回退到 q8_0/q4_0\n")
 		profile.HasIsoQuant = false
 	}
 	if err := engine.PreflightCheck(profile, hw); err != nil {

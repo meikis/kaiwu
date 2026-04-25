@@ -32,7 +32,7 @@ type RunningEngine struct {
 func Start(profile *model.DeployProfile, binaryPath, modelPath string, hw *hardware.HardwareProbe) (*RunningEngine, error) {
 	// 运行时探测 llama-server 是否支持 iso3
 	if profile.HasIsoQuant && !DetectIso3Support(binaryPath) {
-		fmt.Println("      llama-server 不支持 iso3，回退到 q8_0/q4_0")
+		fmt.Println("      llama-server 不支持 iso3 (或首次 JIT 编译超时)，回退到 q8_0/q4_0")
 		profile.HasIsoQuant = false
 	}
 
@@ -388,7 +388,9 @@ func shouldMmapEngine(hw *hardware.HardwareProbe, profile *model.DeployProfile) 
 
 // DetectIso3Support 检测 llama-server 是否支持 iso3 (exported for use in warmup)
 func DetectIso3Support(binaryPath string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Blackwell (SM120/SM121) and newer architectures need PTX JIT compilation
+	// on first run, which can take 30-60 seconds. Use longer timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, binaryPath, "--help").CombinedOutput()
 	// --help 可能返回非零退出码，只要有输出就检查内容
